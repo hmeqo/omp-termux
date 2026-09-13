@@ -1,0 +1,827 @@
+# Termux/Android runtime support for @oh-my-pi/pi-natives
+#
+#   upstream  : https://github.com/can1357/oh-my-pi        (MIT)
+#   pull      : https://github.com/can1357/oh-my-pi/pull/6350
+#   author    : anatoli-tsinovoy
+#   fork pull : https://github.com/anatoli-tsinovoy/oh-my-pi/pull/6
+#   head sha  : dff59821aeb5efaa041095f4bb9c5811c71ce613  (base: main 3b3a6dc9bbd8)
+#   fetched   : 2026-09-13
+#
+# 17 files, +348/-78. Summary:
+#   crates/pi-natives           arboard + clipboard/desktop modules become
+#                               cfg(not(target_os = "android")) — arboard has no
+#                               Android backend.
+#   crates/pi-shell,            Bionic-compatible process discovery (/proc) and
+#   crates/pi-builtins,         PTY/shell handling.
+#   crates/pi-walker
+#   packages/natives/scripts/   scopes RUSTC_BOOTSTRAP to xutf,pi_natives so a
+#     build-bindings.ts         stable rustc (what Termux ships) can build them.
+#   packages/natives/native/    passes `undefined` through so the public
+#     desktop-adapter.js        entrypoint survives a missing DesktopSession.
+#   packages/coding-agent       Termux clipboard path, bundled-binary launcher.
+#
+# The two CHANGELOG files in the diff are excluded at apply time:
+#   git apply --exclude='*CHANGELOG.md' patches/0001-termux-android-arm64.patch
+diff --git a/crates/pi-builtins/src/kill.rs b/crates/pi-builtins/src/kill.rs
+index b342a7e2c72..08caffd61d6 100644
+--- a/crates/pi-builtins/src/kill.rs
++++ b/crates/pi-builtins/src/kill.rs
+@@ -599,6 +599,17 @@ mod tests {
+ 		assert!(printed_signal("128").is_err());
+ 		assert!(printed_signal("265").is_err());
+ 	}
++
++	/// Android's bionic exposes real-time signal numbers through SIGRTMAX, but
++	/// brush's portable signal enum intentionally contains only named signals.
++	/// The process matcher carries the raw number to `kill(2)` instead.
++	#[cfg(target_os = "android")]
++	#[test]
++	fn accepts_android_realtime_signal_numbers() {
++		let max = libc::SIGRTMAX();
++		assert_eq!(signal_number(&max.to_string()), Some(max));
++		assert_eq!(signal_number(&(max + 1).to_string()), None);
++	}
+ }
+ 
+ /// A `kill` signal argument: a real signal, or the "does this process
+@@ -640,12 +651,16 @@ pub(crate) fn signal_number(value: &str) -> Option<i32> {
+ 		.strip_prefix("SIG")
+ 		.or_else(|| value.strip_prefix("sig"))
+ 		.unwrap_or(value);
++	#[cfg(any(target_os = "android", target_os = "linux"))]
+ 	if let Ok(number) = value.parse::<i32>() {
+-		#[cfg(target_os = "linux")]
+ 		return (0..=libc::SIGRTMAX()).contains(&number).then_some(number);
+-		#[cfg(target_os = "macos")]
++	}
++	#[cfg(target_os = "macos")]
++	if let Ok(number) = value.parse::<i32>() {
+ 		return (0..=31).contains(&number).then_some(number);
+-		#[cfg(not(unix))]
++	}
++	#[cfg(not(unix))]
++	if let Ok(number) = value.parse::<i32>() {
+ 		return (0..=64).contains(&number).then_some(number);
+ 	}
+ 	match KillSignal::parse(value).ok()? {
+diff --git a/crates/pi-builtins/src/proc_snapshot.rs b/crates/pi-builtins/src/proc_snapshot.rs
+index 43ea86799a9..ed1efd0c0be 100644
+--- a/crates/pi-builtins/src/proc_snapshot.rs
++++ b/crates/pi-builtins/src/proc_snapshot.rs
+@@ -41,7 +41,7 @@ pub(crate) fn sanitize_process_command(command: String) -> String {
+ 		.collect()
+ }
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "android", target_os = "linux"))]
+ mod proc_snapshot {
+ 	use std::{
+ 		fs,
+@@ -208,12 +208,7 @@ mod proc_snapshot {
+ 		}
+ 
+ 		pub fn age(&self) -> Option<Duration> {
+-			let uptime = fs::read_to_string("/proc/uptime")
+-				.ok()?
+-				.split_whitespace()
+-				.next()?
+-				.parse::<f64>()
+-				.ok()?;
++			let uptime = uptime_seconds()?;
+ 			let ticks = clock_ticks()? as f64;
+ 			Some(Duration::from_secs_f64((uptime - self.stat.start_time as f64 / ticks).max(0.0)))
+ 		}
+@@ -240,6 +235,21 @@ mod proc_snapshot {
+ 				return read_stat(self.pid).is_some_and(|stat| stat.start_time == self.stat.start_time);
+ 			}
+ 			let Some(pidfd) = open_pidfd(self.pid) else {
++				#[cfg(target_os = "android")]
++				{
++					if queue.is_some() {
++						return false;
++					}
++					let Some(stat) = read_stat(self.pid) else {
++						return false;
++					};
++					if stat.start_time != self.stat.start_time || stat.state == 'Z' {
++						return false;
++					}
++					// SAFETY: kill takes scalar arguments and no pointers.
++					return unsafe { libc::kill(self.pid, signal) == 0 };
++				}
++				#[cfg(target_os = "linux")]
+ 				return false;
+ 			};
+ 			if read_stat(self.pid).is_none_or(|stat| stat.start_time != self.stat.start_time) {
+@@ -337,6 +347,29 @@ mod proc_snapshot {
+ 		Some((ids.next()?, ids.next()?))
+ 	}
+ 
++	#[cfg(target_os = "linux")]
++	fn uptime_seconds() -> Option<f64> {
++		fs::read_to_string("/proc/uptime")
++			.ok()?
++			.split_whitespace()
++			.next()?
++			.parse()
++			.ok()
++	}
++
++	#[cfg(target_os = "android")]
++	fn uptime_seconds() -> Option<f64> {
++		let mut uptime = libc::timespec {
++			tv_sec:  0,
++			tv_nsec: 0,
++		};
++		// SAFETY: clock_gettime writes one initialized timespec to a valid pointer.
++		if unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &raw mut uptime) } != 0 {
++			return None;
++		}
++		Some(uptime.tv_sec as f64 + uptime.tv_nsec as f64 / 1_000_000_000.0)
++	}
++
+ 	fn clock_ticks() -> Option<u64> {
+ 		// SAFETY: sysconf reads a process-global constant.
+ 		u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) })
+@@ -1080,7 +1113,7 @@ mod proc_snapshot {
+ 	}
+ }
+ 
+-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
++#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos", target_os = "windows"))]
+ pub use proc_snapshot::ProcInfo;
+ 
+ /// The processes a signal must never reach: this one and its ancestors.
+@@ -1104,7 +1137,7 @@ pub use proc_snapshot::ProcInfo;
+ ///
+ /// Listing is unaffected: `pgrep` still reports ancestors and `ps` still shows
+ /// them. Only signalling consults this.
+-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
++#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos", target_os = "windows"))]
+ pub(crate) struct HostProcesses {
+ 	/// This process and its ancestors, nearest first.
+ 	pub pids:  smallvec::SmallVec<[i32; 16]>,
+@@ -1117,17 +1150,17 @@ pub(crate) struct HostProcesses {
+ /// Keeping the walk over this rather than over [`ProcInfo`] lets the recycling
+ /// cases — which are otherwise only reachable by winning a race against the OS —
+ /// be tested with a synthetic tree.
+-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
++#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos", target_os = "windows"))]
+ #[derive(Clone, Copy)]
+ struct ChainNode {
+ 	ppid:  Option<i32>,
+ 	pgid:  Option<i32>,
+-	/// Platform start time. Monotonic on all three supported platforms, so a
+-	/// larger value means the process started later.
++	/// Platform start time. Monotonic on every supported platform, so a larger
++	/// value means the process started later.
+ 	start: u64,
+ }
+ 
+-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
++#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos", target_os = "windows"))]
+ impl HostProcesses {
+ 	/// Walks the parent chain from the current process, taking one process-table
+ 	/// snapshot.
+diff --git a/crates/pi-builtins/src/ps.rs b/crates/pi-builtins/src/ps.rs
+index e4ee3da0fb4..26a4da67b94 100644
+--- a/crates/pi-builtins/src/ps.rs
++++ b/crates/pi-builtins/src/ps.rs
+@@ -1244,7 +1244,7 @@ fn format_ps_elapsed(duration: Duration) -> String {
+ 	}
+ }
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "android", target_os = "linux"))]
+ fn ps_total_memory_bytes() -> Option<u64> {
+ 	let value = fs::read_to_string("/proc/meminfo")
+ 		.ok()?
+diff --git a/crates/pi-natives/Cargo.toml b/crates/pi-natives/Cargo.toml
+index 6ade9a0023b..c95f6b6ba88 100644
+--- a/crates/pi-natives/Cargo.toml
++++ b/crates/pi-natives/Cargo.toml
+@@ -24,7 +24,6 @@ wayland-pipewire = ["dep:pipewire"]
+ [dependencies]
+ anyhow.workspace = true
+ async-trait.workspace = true
+-arboard.workspace = true
+ ast-grep-core.workspace = true
+ base64.workspace = true
+ clap.workspace = true
+@@ -100,6 +99,9 @@ objc2-foundation = "=0.3.2"
+ objc2-application-services = { version = "=0.3.2", default-features = true }
+ objc2-core-foundation = "=0.3.2"
+ 
++[target.'cfg(not(target_os = "android"))'.dependencies]
++arboard.workspace = true
++
+ [target.'cfg(unix)'.dependencies]
+ libc.workspace = true
+ 
+diff --git a/crates/pi-natives/src/lib.rs b/crates/pi-natives/src/lib.rs
+index 20f5c23eee4..25eb8dde7e0 100644
+--- a/crates/pi-natives/src/lib.rs
++++ b/crates/pi-natives/src/lib.rs
+@@ -26,8 +26,10 @@ pub mod appearance;
+ pub mod ast;
+ pub mod audio;
+ pub mod block;
++#[cfg(not(target_os = "android"))]
+ pub mod clipboard;
+ pub mod crash_handler;
++#[cfg(not(target_os = "android"))]
+ pub mod desktop;
+ pub mod devicecheck;
+ pub mod diff;
+diff --git a/crates/pi-shell/src/process.rs b/crates/pi-shell/src/process.rs
+index 253ea8c980a..29e8190d094 100644
+--- a/crates/pi-shell/src/process.rs
++++ b/crates/pi-shell/src/process.rs
+@@ -16,7 +16,7 @@ pub use pi_builtins::ProcessStatus;
+ 
+ use crate::cancel::CancelToken;
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "android"))]
+ mod platform {
+ 	use std::{
+ 		collections::HashSet,
+@@ -29,12 +29,15 @@ mod platform {
+ 
+ 	use super::ProcessStatus;
+ 
+-	/// Stable Linux process reference backed by a pidfd.
++	/// Stable Linux/Android process reference. Linux requires a pidfd; Android
++	/// uses one when available and falls back to `/proc` start-time identity.
++	/// `start_time` is recorded only for the fallback and is never paired with
++	/// a pidfd.
+ 	#[derive(Clone)]
+ 	pub struct Process {
+ 		pid:        i32,
+-		pidfd:      Arc<OwnedFd>,
+-		start_time: u64,
++		pidfd:      Option<Arc<OwnedFd>>,
++		start_time: Option<u64>,
+ 	}
+ 
+ 	impl Process {
+@@ -42,8 +45,14 @@ mod platform {
+ 			if pid <= 0 {
+ 				return None;
+ 			}
+-			let pidfd = open_pidfd(pid)?;
+-			let start_time = read_start_time(pid)?;
++			let pidfd = open_pidfd(pid);
++			#[cfg(target_os = "linux")]
++			let pidfd = Some(pidfd?);
++			let start_time = if pidfd.is_some() {
++				None
++			} else {
++				Some(read_live_start_time(pid)?)
++			};
+ 			Some(Self { pid, pidfd, start_time })
+ 		}
+ 
+@@ -155,21 +164,31 @@ mod platform {
+ 		}
+ 
+ 		pub fn kill(&self, signal: i32) -> bool {
+-			// SAFETY: `self.pidfd` is an owned file descriptor returned by a successful
+-			// `pidfd_open` call and remains open for the duration of this syscall. A null
+-			// `siginfo_t` pointer is explicitly accepted by `pidfd_send_signal` and makes
+-			// the kernel synthesize the same signal metadata as `kill(2)`. Flags are zero,
+-			// which is the documented default behavior.
+-			let ret = unsafe {
+-				libc::syscall(
+-					libc::SYS_pidfd_send_signal,
+-					self.pidfd.as_raw_fd(),
+-					signal,
+-					ptr::null::<libc::siginfo_t>(),
+-					0,
+-				)
+-			};
+-			ret == 0
++			if let Some(pidfd) = &self.pidfd {
++				// SAFETY: `pidfd` is an owned file descriptor returned by a successful
++				// `pidfd_open` call and remains open for the duration of this syscall. A
++				// null `siginfo_t` pointer is explicitly accepted by
++				// `pidfd_send_signal`. Flags are zero, the documented default behavior.
++				let ret = unsafe {
++					libc::syscall(
++						libc::SYS_pidfd_send_signal,
++						pidfd.as_raw_fd(),
++						signal,
++						ptr::null::<libc::siginfo_t>(),
++						0,
++					)
++				};
++				return ret == 0;
++			}
++
++			// Android kernels without pidfd support use the recorded `/proc` start time.
++			// `live_identity` revalidates it immediately before the raw signal.
++			if !self.live_identity() {
++				return false;
++			}
++			// SAFETY: `kill` takes integer identifiers by value and does not access
++			// caller-owned memory.
++			unsafe { libc::kill(self.pid, signal) == 0 }
+ 		}
+ 
+ 		pub fn group_id(&self) -> Option<i32> {
+@@ -177,17 +196,28 @@ mod platform {
+ 				return None;
+ 			}
+ 
+-			// SAFETY: `self.pid` names the process currently referenced by `self.pidfd`
+-			// unless it exits concurrently. If it exits, `getpgid` reports failure rather
+-			// than dereferencing caller-owned memory.
++			// SAFETY: `status` just confirmed that `self.pid` still has the recorded
++			// identity. If it exits concurrently, `getpgid` reports failure rather than
++			// dereferencing caller-owned memory.
+ 			let pgid = unsafe { libc::getpgid(self.pid) };
+ 			if pgid > 0 { Some(pgid) } else { None }
+ 		}
+ 
+ 		pub fn status(&self) -> ProcessStatus {
++			let Some(pidfd) = &self.pidfd else {
++				let Some(start_time) = self.start_time else {
++					return ProcessStatus::Exited;
++				};
++				return if read_live_start_time(self.pid) == Some(start_time) {
++					ProcessStatus::Running
++				} else {
++					ProcessStatus::Exited
++				};
++			};
++
+ 			loop {
+ 				let mut pollfd =
+-					libc::pollfd { fd: self.pidfd.as_raw_fd(), events: libc::POLLIN, revents: 0 };
++					libc::pollfd { fd: pidfd.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+ 				// SAFETY: `pollfd` points to one initialized `pollfd` element, and the pidfd
+ 				// remains open for the duration of the call. Timeout zero makes this a
+ 				// non-blocking readiness probe.
+@@ -235,7 +265,6 @@ mod platform {
+ 
+ 		fn live_identity(&self) -> bool {
+ 			self.status() == ProcessStatus::Running
+-				&& read_start_time(self.pid) == Some(self.start_time)
+ 		}
+ 	}
+ 
+@@ -257,15 +286,18 @@ mod platform {
+ 		})
+ 	}
+ 
+-	fn read_start_time(pid: i32) -> Option<u64> {
++	fn read_live_start_time(pid: i32) -> Option<u64> {
+ 		// `/proc/[pid]/stat` field 22 is the process start time in clock ticks since
+ 		// boot. The comm field (between parens) may itself contain spaces and parens,
+ 		// so locate the *last* `)` and split the trailing whitespace-separated fields.
+ 		let stat_path = format!("/proc/{pid}/stat");
+ 		let content = fs::read_to_string(stat_path).ok()?;
+ 		let last_paren = content.rfind(')')?;
+-		let rest = &content[last_paren + 1..];
+-		rest.split_whitespace().nth(19)?.parse().ok()
++		let mut fields = content[last_paren + 1..].split_whitespace();
++		if fields.next()? == "Z" {
++			return None;
++		}
++		fields.nth(18)?.parse().ok()
+ 	}
+ 
+ 	fn open_pidfd(pid: i32) -> Option<Arc<OwnedFd>> {
+diff --git a/crates/pi-walker/src/lib.rs b/crates/pi-walker/src/lib.rs
+index 75d1bff43f1..c6d7d91d118 100644
+--- a/crates/pi-walker/src/lib.rs
++++ b/crates/pi-walker/src/lib.rs
+@@ -3385,6 +3385,7 @@ fn push_relative_name(relative: &mut String, name: &str) {
+ 	relative.push_str(name);
+ }
+ 
++#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+ fn mtime_millis(seconds: i64, nanos: i64) -> Option<f64> {
+ 	if seconds < 0 {
+ 		return None;
+diff --git a/packages/coding-agent/CHANGELOG.md b/packages/coding-agent/CHANGELOG.md
+index 2b177bf704b..27f67bd750d 100644
+--- a/packages/coding-agent/CHANGELOG.md
++++ b/packages/coding-agent/CHANGELOG.md
+@@ -2,6 +2,11 @@
+ 
+ ## [Unreleased]
+ 
++### Fixed
++
++- Fixed failed Termux clipboard copies falling through to a synchronous native helper that could freeze the TUI.
++- Android/Termux builds now produce a runnable bundled launcher instead of a Bun-compiled executable that crashes on startup.
++
+ ## [18.1.16] - 2026-09-09
+ 
+ ### Added
+diff --git a/packages/coding-agent/scripts/build-binary.ts b/packages/coding-agent/scripts/build-binary.ts
+index 5f2a00a65ec..83d8b0c88f0 100644
+--- a/packages/coding-agent/scripts/build-binary.ts
++++ b/packages/coding-agent/scripts/build-binary.ts
+@@ -1,5 +1,6 @@
+ #!/usr/bin/env bun
+ 
++import * as fs from "node:fs/promises";
+ import { createRequire } from "node:module";
+ import * as path from "node:path";
+ import { compileCodingAgent } from "./compile-binary";
+@@ -73,6 +74,22 @@ async function runCommand(
+ 	}
+ }
+ 
++async function buildAndroidLauncher(outputPath: string): Promise<void> {
++	await runCommand(["bun", "run", "gen:bundle"]);
++
++	// Keep the Android artifact on the canonical shell-launcher path. Termux
++	// needs a different interpreter path because it does not provide /bin/sh;
++	// all symlink resolution, cwd isolation, and preload handling stay shared.
++	const canonicalLauncherPath = path.join(packageDir, "scripts", "omp");
++	const canonicalLauncher = await Bun.file(canonicalLauncherPath).text();
++	const launcher = canonicalLauncher.replace(/^#![^\n]*\n/, "#!/data/data/com.termux/files/usr/bin/sh\n");
++	if (launcher === canonicalLauncher) {
++		throw new Error(`Canonical launcher has no shebang: ${canonicalLauncherPath}`);
++	}
++	await Bun.write(outputPath, launcher);
++	await fs.chmod(outputPath, 0o755);
++}
++
+ async function main(): Promise<void> {
+ 	const crossBuild = resolveCrossBuild(Bun.env.CROSS_TARGET);
+ 	const shouldAdhocSign = process.platform === "darwin" && !crossBuild && Bun.env.BUN_NO_CODESIGN_MACHO_BINARY !== "1";
+@@ -92,18 +109,22 @@ async function main(): Promise<void> {
+ 			crossBuild ? { ...Bun.env, TARGET_PLATFORM: crossBuild.platform, TARGET_ARCH: crossBuild.arch } : Bun.env,
+ 		);
+ 		try {
+-			await compileCodingAgent({
+-				repoRoot,
+-				entrypoint: path.join(packageDir, "src", "cli.ts"),
+-				outfile: outputPath,
+-				transformersVersion,
+-				target: crossBuild?.target,
+-				executablePath: Bun.env.BUN_COMPILE_EXECUTABLE_PATH || undefined,
+-				skipBuiltinCodesign: shouldAdhocSign,
+-			});
++			if (process.platform === "android" && !crossBuild) {
++				await buildAndroidLauncher(outputPath);
++			} else {
++				await compileCodingAgent({
++					repoRoot,
++					entrypoint: path.join(packageDir, "src", "cli.ts"),
++					outfile: outputPath,
++					transformersVersion,
++					target: crossBuild?.target,
++					executablePath: Bun.env.BUN_COMPILE_EXECUTABLE_PATH || undefined,
++					skipBuiltinCodesign: shouldAdhocSign,
++				});
+ 
+-			if (shouldAdhocSign) {
+-				await runCommand(["codesign", "--force", "--sign", "-", outputPath]);
++				if (shouldAdhocSign) {
++					await runCommand(["codesign", "--force", "--sign", "-", outputPath]);
++				}
+ 			}
+ 		} finally {
+ 			await runCommand(["bun", "--cwd=../natives", "run", "gen:native:reset"]);
+diff --git a/packages/coding-agent/scripts/omp b/packages/coding-agent/scripts/omp
+index 82721c719d2..4780f90ac7c 100755
+--- a/packages/coding-agent/scripts/omp
++++ b/packages/coding-agent/scripts/omp
+@@ -1,12 +1,13 @@
+ #!/bin/sh
+-# Dev launcher for the omp CLI, installed by `bun run setup`.
++# Shell launcher for the omp CLI, used by both source installs and bundled
++# Android artifacts.
+ #
+-# Problem it solves: Bun reads `bunfig.toml` from the *current working
+-# directory* at startup and evaluates its `preload` entries before running the
+-# script. A bun-shebang bin (what `bun link` creates for `src/cli.ts`)
+-# therefore inherits whatever `preload` the directory you happen to be in
+-# declares. Running `omp`/`pi` inside an unrelated Bun project can execute — and
+-# crash on — that project's preload, e.g.
++# Bun reads `bunfig.toml` from the *current working directory* at startup and
++# evaluates its `preload` entries before running the script. A bun-shebang bin
++# (what `bun link` creates for `src/cli.ts`) therefore inherits whatever
++# `preload` the directory you happen to be in. Running `omp`/`pi` inside an
++# unrelated Bun project can execute — and crash on — that project's preload,
++# e.g.
+ #   error: Cannot find module '@v12sh/utils/frontmatter' from '.../loader.ts'
+ #
+ # Bun only reads the *exact* cwd (it does not walk parents) and ignores
+@@ -26,9 +27,34 @@ while [ -L "$self" ]; do
+ 	esac
+ done
+ scripts_dir=$(CDPATH= cd -- "$(dirname -- "$self")" && pwd -P)
+-cli=$scripts_dir/../src/cli.ts
+-preload=$scripts_dir/omp.ts
+-timing_preload=$scripts_dir/../../utils/src/module-timer.ts
++
++# Source launchers live in scripts/ beside omp.ts and point at src/cli.ts.
++# `build-binary.ts` copies this same launcher to dist/omp after generating the
++# bundle; in that layout omp.ts is in the package's scripts/ directory while
++# dist/cli.js is beside the launcher.
++if [ -r "$scripts_dir/omp.ts" ]; then
++	cli=$scripts_dir/../src/cli.ts
++	preload=$scripts_dir/omp.ts
++	timing_preload=$scripts_dir/../../utils/src/module-timer.ts
++else
++	package_dir=$(CDPATH= cd -- "$scripts_dir/.." && pwd -P)
++	cli=$scripts_dir/cli.js
++	preload=$package_dir/scripts/omp.ts
++	timing_preload=
++fi
++
++if [ ! -r "$cli" ]; then
++	echo "omp: missing CLI entrypoint: $cli" >&2
++	exit 127
++fi
++if [ ! -r "$preload" ]; then
++	echo "omp: missing launch preload: $preload" >&2
++	exit 127
++fi
++if [ -n "${PI_TIMING:-}" ] && [ -n "$timing_preload" ] && [ ! -r "$timing_preload" ]; then
++	echo "omp: missing timing preload: $timing_preload" >&2
++	exit 127
++fi
+ 
+ launch_dir=${OMP_DEV_LAUNCH_DIR:-${HOME}/.omp/.dev-cwd}
+ mkdir -p "$launch_dir"
+@@ -37,7 +63,7 @@ OMP_LAUNCH_CWD=$PWD
+ export OMP_LAUNCH_CWD
+ cd "$launch_dir"
+ # Herdr 0.7.5 validates the foreground process name. The macOS shell can
+-# preserve OMP's identity while still running the development CLI through Bun.
++# preserve OMP's identity while still running the CLI through Bun.
+ run_bun() {
+ 	if [ "${HERDR_ENV:-}" = 1 ] && [ "$(uname -s)" = Darwin ]; then
+ 		exec -a omp bun "$@"
+@@ -45,7 +71,7 @@ run_bun() {
+ 	exec bun "$@"
+ }
+ 
+-if [ -n "${PI_TIMING:-}" ]; then
++if [ -n "${PI_TIMING:-}" ] && [ -n "$timing_preload" ]; then
+ 	run_bun --preload "$preload" --preload "$timing_preload" "$cli" "$@"
+ fi
+ run_bun --preload "$preload" "$cli" "$@"
+diff --git a/packages/coding-agent/src/utils/clipboard.ts b/packages/coding-agent/src/utils/clipboard.ts
+index 9792447c5ba..3df2ecf3baf 100644
+--- a/packages/coding-agent/src/utils/clipboard.ts
++++ b/packages/coding-agent/src/utils/clipboard.ts
+@@ -91,7 +91,7 @@ export async function readMacFileUrlsFromClipboard(): Promise<string[]> {
+  *
+  * Emits OSC 52 first when running in a real terminal (works over SSH/mosh),
+  * then attempts native clipboard copy as best-effort for local sessions.
+- * On Termux, tries `termux-clipboard-set` before native.
++ * On Termux, only the bounded asynchronous `termux-clipboard-set` path runs.
+  *
+  * @param text - UTF-8 text to place on the clipboard.
+  */
+@@ -127,12 +127,8 @@ export async function copyToClipboard(text: string): Promise<void> {
+ 	// Also try native tools (best effort for local sessions)
+ 	try {
+ 		if (process.env.TERMUX_VERSION) {
+-			try {
+-				await spawnCapture(["termux-clipboard-set"], { input: text, timeoutMs: 5000 });
+-				return;
+-			} catch {
+-				// Fall through to native
+-			}
++			await spawnCapture(["termux-clipboard-set"], { input: text, timeoutMs: 5000 });
++			return;
+ 		}
+ 
+ 		await nativeCopyToClipboard(text);
+diff --git a/packages/coding-agent/test/utils/clipboard.test.ts b/packages/coding-agent/test/utils/clipboard.test.ts
+index 55909c6520c..2daba1eccf6 100644
+--- a/packages/coding-agent/test/utils/clipboard.test.ts
++++ b/packages/coding-agent/test/utils/clipboard.test.ts
+@@ -1,5 +1,6 @@
+ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+ import {
++	copyToClipboard,
+ 	readImageFromClipboard,
+ 	readMacFileUrlsFromClipboard,
+ 	readTextFromClipboard,
+@@ -83,6 +84,22 @@ afterEach(() => {
+ const RED_1X1_PNG_BASE64 =
+ 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+ 
++describe("copyToClipboard on Termux", () => {
++	it("does not invoke the native fallback when the Termux helper fails", async () => {
++		process.env.TERMUX_VERSION = "0.118";
++		const calls: SpawnCall[] = [];
++		vi.spyOn(process.stdout, "write").mockImplementation(() => true);
++		spySpawn(calls, "", 1);
++		const nativeSpy = vi.spyOn(native, "copyToClipboard");
++
++		await copyToClipboard("hello");
++
++		expect(calls).toHaveLength(1);
++		expect(calls[0]?.cmd).toEqual(["termux-clipboard-set"]);
++		expect(nativeSpy).not.toHaveBeenCalled();
++	});
++});
++
+ describe("readImageFromClipboard on WSL", () => {
+ 	it("decodes the PowerShell base64 payload without touching the native bridge", async () => {
+ 		setPlatform("linux");
+diff --git a/packages/natives/CHANGELOG.md b/packages/natives/CHANGELOG.md
+index 7690cc65452..98da0d27d6d 100644
+--- a/packages/natives/CHANGELOG.md
++++ b/packages/natives/CHANGELOG.md
+@@ -1,6 +1,9 @@
+ # Changelog
+ 
+ ## [Unreleased]
++### Added
++
++- Added source-built Android ARM64/Termux support for local native addon builds and Bionic process management; clipboard integration remains Termux API based.
+ 
+ ## [18.1.15] - 2026-09-08
+ 
+diff --git a/packages/natives/native/desktop-adapter.d.ts b/packages/natives/native/desktop-adapter.d.ts
+index 17d44f82de5..b7868a56aeb 100644
+--- a/packages/natives/native/desktop-adapter.d.ts
++++ b/packages/natives/native/desktop-adapter.d.ts
+@@ -25,4 +25,6 @@ interface AdaptedDesktopSessionConstructor {
+ 	new (options: Record<string, unknown>): AdaptedDesktopSession;
+ }
+ 
++export function adaptDesktopSession(NativeDesktopSession: undefined): undefined;
++export function adaptDesktopSession(NativeDesktopSession: null): null;
+ export function adaptDesktopSession(NativeDesktopSession: unknown): AdaptedDesktopSessionConstructor;
+diff --git a/packages/natives/native/desktop-adapter.js b/packages/natives/native/desktop-adapter.js
+index 8b1402f052b..df9d8bdc659 100644
+--- a/packages/natives/native/desktop-adapter.js
++++ b/packages/natives/native/desktop-adapter.js
+@@ -94,6 +94,7 @@ function frameSignature(capture) {
+  * current addons already expose the complete API and pass through unchanged.
+  */
+ export function adaptDesktopSession(NativeDesktopSession) {
++	if (typeof NativeDesktopSession !== "function") return NativeDesktopSession;
+ 	if (typeof NativeDesktopSession?.prototype?.click === "function") return NativeDesktopSession;
+ 	const cached = ADAPTED_SESSION_CLASSES.get(NativeDesktopSession);
+ 	if (cached) return cached;
+diff --git a/packages/natives/scripts/build-bindings.ts b/packages/natives/scripts/build-bindings.ts
+index 163363aa337..f22557bb163 100644
+--- a/packages/natives/scripts/build-bindings.ts
++++ b/packages/natives/scripts/build-bindings.ts
+@@ -21,6 +21,12 @@ import { generateEnumExports } from "./gen-enums";
+ // static build so the local addon never retains host Homebrew paths.
+ process.env.PCRE2_SYS_STATIC ??= "1";
+ 
++// Termux ships a stable Rust compiler, while xutf and pi-natives use features
++// enabled by the repository's pinned nightly. Scope the bootstrap escape hatch.
++if (process.platform === "android") {
++	process.env.RUSTC_BOOTSTRAP ??= "xutf,pi_natives";
++}
++
+ // Windows: cc-rs and rustc auto-locate cl.exe/link.exe through the VS
+ // registry, but the cmake crate (audiopus_sys' bundled opus) needs cmake —
+ // and its Ninja generator needs ninja — on PATH. VS Build Tools ships both
+@@ -58,6 +64,57 @@ const repoRoot = path.join(import.meta.dir, "../../..");
+ const rustDir = path.join(repoRoot, "crates/pi-natives");
+ const nativeDir = path.join(import.meta.dir, "../native");
+ const packageJsonPath = path.join(import.meta.dir, "../package.json");
++// napi-rs omits modules guarded out for the target (currently desktop and
++// clipboard on Android), but the package's public entrypoint remains
++// platform-neutral. Keep the declarations needed by those optional modules in
++// the generated surface so `gen-enums.ts` preserves their named exports.
++const PLATFORM_NEUTRAL_BINDING_NAMES: Record<string, true> = {
++	AxNode: true,
++	AxQuery: true,
++	AxSnapshot: true,
++	AxSnapshotOptions: true,
++	CaptureCaps: true,
++	ClipboardImage: true,
++	DesktopCapabilities: true,
++	DesktopCapture: true,
++	DesktopDisplay: true,
++	DesktopPoint: true,
++	DesktopSession: true,
++	DesktopSessionOptions: true,
++	DesktopWindow: true,
++	PointerOptions: true,
++	copyToClipboard: true,
++	readImageFromClipboard: true,
++};
++
++const DECLARATION_START_RE = /^export (?:declare (?:class|function|enum)|(?:interface|type))\s+(\w+)/;
++
++function declarationBlocks(dts: string): Map<string, string> {
++	const lines = dts.split("\n");
++	const starts: Array<{ name: string; line: number }> = [];
++	for (let line = 0; line < lines.length; line++) {
++		const match = DECLARATION_START_RE.exec(lines[line]!);
++		if (match !== null) starts.push({ name: match[1]!, line });
++	}
++
++	const blocks = new Map<string, string>();
++	for (let index = 0; index < starts.length; index++) {
++		const current = starts[index]!;
++		const nextLine = starts[index + 1]?.line ?? lines.length;
++		blocks.set(current.name, lines.slice(current.line, nextLine).join("\n").trim());
++	}
++	return blocks;
++}
++
++function preservePlatformNeutralDeclarations(generated: string, existing: string): string {
++	const generatedBlocks = declarationBlocks(generated);
++	const existingBlocks = declarationBlocks(existing);
++	const preserved = [...existingBlocks.entries()]
++		.filter(([name]) => PLATFORM_NEUTRAL_BINDING_NAMES[name] === true && !generatedBlocks.has(name))
++		.map(([, block]) => block);
++	if (preserved.length === 0) return generated;
++	return `${generated.trimEnd()}\n\n${preserved.join("\n\n")}\n`;
++}
+ 
+ const localAddon = resolveLocalHostAddon({
+ 	platform: process.platform,
+@@ -167,7 +224,11 @@ async function installGeneratedBindings(outputDir: string): Promise<void> {
+ 	const sourcePath = path.join(outputDir, "index.d.ts");
+ 	const destPath = path.join(nativeDir, "index.d.ts");
+ 	try {
+-		await fs.copyFile(sourcePath, destPath);
++		const generated = await fs.readFile(sourcePath, "utf8");
++		const existing = await fs
++			.readFile(destPath, "utf8")
++			.catch(err => ((err as NodeJS.ErrnoException).code === "ENOENT" ? "" : Promise.reject(err)));
++		await fs.writeFile(destPath, preservePlatformNeutralDeclarations(generated, existing));
+ 	} catch (err) {
+ 		const message = err instanceof Error ? err.message : String(err);
+ 		throw new Error(`Failed to install generated index.d.ts: ${message}`);
+diff --git a/packages/natives/test/desktop-adapter.test.ts b/packages/natives/test/desktop-adapter.test.ts
+index 9cdd7429398..e48c97c2323 100644
+--- a/packages/natives/test/desktop-adapter.test.ts
++++ b/packages/natives/test/desktop-adapter.test.ts
+@@ -1,4 +1,7 @@
+ import { describe, expect, it } from "bun:test";
++import * as fs from "node:fs/promises";
++import * as os from "node:os";
++import * as path from "node:path";
+ import { adaptDesktopSession } from "../native/desktop-adapter.js";
+ 
+ class LegacyDesktopSession {
+@@ -51,6 +54,56 @@ describe("legacy DesktopSession adapter", () => {
+ 		expect(adapted).toBe(CurrentDesktopSession);
+ 	});
+ 
++	it("keeps unavailable desktop bindings usable through the public entrypoint", async () => {
++		const fixtureDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-natives-public-entrypoint-"));
++		try {
++			const realLoaderUrl = new URL("../native/loader-state.js", import.meta.url).href;
++			await Promise.all([
++				fs.writeFile(path.join(fixtureDir, "package.json"), '{"type":"module"}\n'),
++				fs.copyFile(path.join(import.meta.dir, "../native/index.js"), path.join(fixtureDir, "index.js")),
++				fs.copyFile(
++					path.join(import.meta.dir, "../native/desktop-adapter.js"),
++					path.join(fixtureDir, "desktop-adapter.js"),
++				),
++				fs.writeFile(
++					path.join(fixtureDir, "loader-state.js"),
++					[
++						`import { loadNative as loadActualNative } from ${JSON.stringify(realLoaderUrl)};`,
++						"export function loadNative() {",
++						"\treturn { ...loadActualNative(), DesktopSession: undefined };",
++						"}",
++						"",
++					].join("\n"),
++				),
++				fs.writeFile(
++					path.join(fixtureDir, "consumer.js"),
++					[
++						'import { DesktopSession, visibleWidth } from "./index.js";',
++						"if (DesktopSession !== undefined) throw new Error('expected unavailable DesktopSession, got ' + typeof DesktopSession);",
++						'if (visibleWidth("supported", 4) !== 9) throw new Error("supported native export failed");',
++						'process.stdout.write("ok\\n");',
++						"",
++					].join("\n"),
++				),
++			]);
++
++			const child = Bun.spawn([process.execPath, path.join(fixtureDir, "consumer.js")], {
++				cwd: fixtureDir,
++				stdout: "pipe",
++				stderr: "pipe",
++			});
++			const [exitCode, stdout, stderr] = await Promise.all([
++				child.exited,
++				new Response(child.stdout).text(),
++				new Response(child.stderr).text(),
++			]);
++			expect(exitCode, stderr).toBe(0);
++			expect(stdout.trim()).toBe("ok");
++		} finally {
++			await fs.rm(fixtureDir, { recursive: true, force: true });
++		}
++	});
++
+ 	it("fills conservative capabilities and translates default foreground input", async () => {
+ 		const DesktopSession = adaptDesktopSession(LegacyDesktopSession);
+ 		const session = new DesktopSession({ display: "all" });

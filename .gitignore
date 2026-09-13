@@ -1,0 +1,12 @@
+# build outputs
+out/
+
+# build workdir: upstream clone, cargo target dir, opus prefix, napi-cli install
+work/
+
+# logs
+*.log
+
+# editors / OS
+.DS_Store
+*.swp
