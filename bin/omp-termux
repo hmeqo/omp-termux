@@ -148,7 +148,22 @@ natives_dirs() {
 	done | sort -u
 }
 
-installed_version() { natives_dirs | while IFS= read -r d; do json_version "$d/package.json"; done | sort -u | head -n1; }
+installed_version() { # the copy in use: the global tree's, else the newest installed
+	local root d v best=""
+	root="${BUN_INSTALL:-$HOME/.bun}"
+	if [ -f "$root/install/global/node_modules/@oh-my-pi/pi-natives/package.json" ]; then
+		json_version "$root/install/global/node_modules/@oh-my-pi/pi-natives/package.json"
+		return 0
+	fi
+	while IFS= read -r d; do
+		v="$(json_version "$d/package.json")"
+		[ -n "$v" ] || continue
+		if [ -z "$best" ] || [ "$(printf '%s\n%s\n' "$v" "$best" | sort -V | tail -n1)" = "$v" ]; then
+			best="$v"
+		fi
+	done < <(natives_dirs)
+	printf '%s\n' "$best"
+}
 
 bun_path() { # "" when bun is not installed
 	local b
@@ -227,10 +242,52 @@ link_global_tree() { # On Termux, `bun install -g` (upstream's documented way) l
 		name="$(basename "$entry")"
 		if [ -L "$cache/node_modules/$name" ]; then
 			ln -sfn "$entry" "$cache/node_modules/$name"
+		elif [ -d "$cache/node_modules/$name" ]; then
+			# `ln -sfn` into an existing directory creates a link *inside* it; leave the directory alone.
+			warn "not linking $name: $cache/node_modules/$name is a directory, not a link"
 		elif [ ! -e "$cache/node_modules/$name" ]; then
 			ln -s "$entry" "$cache/node_modules/$name"
 		fi
 	done
+}
+
+has_other_link_ref() { # $1 = candidate dir, $2 = bun's own nested sibling link (ignored)
+	local want ignore root l
+	want="$(readlink -f "$1" 2>/dev/null)"
+	[ -n "$want" ] || return 1
+	ignore="$(readlink -f "${2:-/nonexistent}" 2>/dev/null)"
+	root="${BUN_INSTALL:-$HOME/.bun}"
+	while IFS= read -r l; do
+		[ "$l" = "${2:-}" ] && continue
+		[ -n "$ignore" ] && [ "$l" = "$ignore" ] && continue
+		[ "$(readlink -f "$l" 2>/dev/null)" = "$want" ] && return 0
+	done < <(find "$root/install" -maxdepth 6 -type l 2>/dev/null)
+	return 1
+}
+
+prune_superseded() { # $1 = the version now installed; drops older pi-natives copies from bun's cache
+	# Only the cache tree, only strictly older versions, and never through a symlink: `find` without -L does
+	# not descend into <cache>/node_modules/<scope>, which is the link that reaches the copy in use.
+	local keep="${1:-}" root cache d v sz base stem nested
+	[ -n "$keep" ] || return 0
+	root="${BUN_INSTALL:-$HOME/.bun}"
+	cache="$root/install/cache"
+	[ -d "$cache" ] || return 0
+	while IFS= read -r d; do
+		v="$(json_version "$d/package.json")"
+		[ -n "$v" ] && [ "$v" != "$keep" ] || continue
+		[ "$(printf '%s\n%s\n' "$v" "$keep" | sort -V | head -n1)" = "$v" ] || continue
+		base="$(basename "$d")"
+		stem="${base%@@@1}"
+		nested="$(dirname "$d")/${stem%@*}/${stem#*@}@@@1"
+		if has_other_link_ref "$d" "$nested"; then
+			warn "keeping the $v copy: a link still points at it"
+			continue
+		fi
+		sz="$(du -sh "$d" 2>/dev/null | cut -f1)"
+		[ -L "$nested" ] && rm -f "$nested"
+		rm -rf "$d" && msg "removed the superseded $v copy${sz:+ ($sz)}"
+	done < <(find "$cache" -maxdepth 3 -type d -path '*@oh-my-pi/pi-natives*' 2>/dev/null)
 }
 
 fetch_release() { # $1 = pi-natives version; puts the addon in RELEASE_ADDON, dies when the release is missing
@@ -280,6 +337,7 @@ device_install() { # $1 = version, "latest", or a path to a .node; no argument =
 	install_addon "$RELEASE_ADDON"
 	rm -rf "$HOME/$SCRATCH"
 	run_verify
+	prune_superseded "$want"
 	cmd_install_self
 }
 
@@ -639,7 +697,7 @@ device_upload() {
 }
 
 device_installed_version() { # "" when the device has no @oh-my-pi/pi-natives or ssh fails
-	device_ssh 'for p in $HOME/.bun/install/cache/@oh-my-pi/pi-natives@*/package.json $HOME/.bun/install/global/node_modules/@oh-my-pi/pi-natives/package.json; do [ -f "$p" ] && sed -n "s/.*\"version\": *\"\([^\"]*\)\".*/\1/p" "$p" | head -n1; done | sort -u | head -n1; exit 0' 2>/dev/null || true
+	device_ssh 'g="$HOME/.bun/install/global/node_modules/@oh-my-pi/pi-natives/package.json"; if [ -f "$g" ]; then sed -n "s/.*\"version\": *\"\([^\"]*\)\".*/\1/p" "$g" | head -n1; exit 0; fi; for p in $HOME/.bun/install/cache/@oh-my-pi/pi-natives@*/package.json; do [ -f "$p" ] && sed -n "s/.*\"version\": *\"\([^\"]*\)\".*/\1/p" "$p" | head -n1; done | sort -V | tail -n1; exit 0' 2>/dev/null || true
 }
 
 # Sets TARGET_VERSION and TARGET_FILE (empty unless the caller passed a local artifact).
