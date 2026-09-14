@@ -126,13 +126,15 @@ OMP_TERMUX_MODE=device bash bin/omp-termux install path/to/pi_natives.android-ar
 
 ## Testing & QA
 
-- There is no test suite, no linter and no test job in CI. The only automated gates are the syntax checks, CI's
-  `bin/omp-termux build` and the in-script `verify_artifact` / `run_verify`.
-- After a change, at minimum: `bash -n bin/omp-termux`, `sh -n install.sh`, and exercise the touched verb in a
-  **fake-device harness** — stub `ssh`/`scp`/`bun`/`curl` first on `PATH`, isolate `HOME`, `TMPDIR`,
-  `XDG_CONFIG_HOME` and a `FAKE_HOME`, force `TERMUX_VERSION=0.118` for device mode. Never point a test at a real
-  device and never let it need the network; a fake `ssh` that re-runs the remote command with `HOME=$FAKE_HOME`
-  is enough to cover both modes.
+- `sh tests/verify.sh` is the local gate: syntax checks, then both modes against a fake device (stubbed
+  `ssh`/`scp`/`bun`/`curl`, isolated `HOME`/`TMPDIR`/`XDG_CONFIG_HOME`/`FAKE_HOME`, `TERMUX_VERSION=0.118`). The
+  device-side and workstation-side sections need `out/pi_natives.android-arm64.node` and are skipped without it.
+  It never touches a real device or the network, and refuses to run if its `/tmp` paths are not what it expects.
+- Extend that script whenever a bug escapes it: the harness is what caught the truncated `fetch_release`, the
+  prune that deleted a link target and the `ln -sfn`-into-a-directory case, but the "no-argument install picked
+  the oldest version" bug only showed up on a real device.
+- CI has no test job: the only automated gates there are `bin/omp-termux build` and the in-script
+  `verify_artifact` / `run_verify`.
 - Contracts to assert after touching install/update code: unknown verbs and option-looking arguments exit 1;
   `install latest` with a missing release exits non-zero, calls no `bun install -g`, and prints
   `nothing was changed`; repeated installs stay idempotent; the device end state is the addon plus
