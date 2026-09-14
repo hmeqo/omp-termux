@@ -120,6 +120,10 @@ OMP_TERMUX_MODE=device bash bin/omp-termux install path/to/pi_natives.android-ar
   lookup order: `OMP_TERMUX_NDK` → `ANDROID_NDK_ROOT` → `ANDROID_NDK_HOME` → `ANDROID_NDK_LATEST_HOME` →
   `$ANDROID_HOME/ndk/*` (newest) → `/opt/android-ndk`; the host dir `toolchains/llvm/prebuilt/linux-x86_64` is
   hard-coded.
+- bun's install root is resolved in one place (`bun_root`, `bun_roots`) and must never be hard-coded: it is
+  `BUN_INSTALL`, else `$XDG_CACHE_HOME/.bun` when that variable is set, else `~/.bun`. Everything that touches
+  the cache, the global tree or a bun binary goes through those helpers, and every root that exists is visited
+  (a device that starts using XDG keeps a legacy `~/.bun` next to the new one).
 - Rust channel and `@napi-rs/cli` version come from the upstream clone (`rust-toolchain.toml`,
   `package.json`) — never pin them here. CI pins `bun-version: 1` only.
 - No package manager, lockfile, linter or formatter in this repo; no JS/TS sources of its own.

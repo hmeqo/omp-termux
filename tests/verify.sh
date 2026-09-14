@@ -114,7 +114,44 @@ ws install-self && ok "工作站 install-self exit=0" || no "install-self 失败
 chk "install-self 建链" "$(readlink "$TW/.local/bin/omp-termux" 2>/dev/null)" "$TW/.local/opt/omp-termux/bin/omp-termux"
 ws uninstall-self && ok "工作站 uninstall-self exit=0" || no "uninstall-self 失败"
 chk "uninstall-self 清干净" "$([ -e "$TW/.local/opt/omp-termux" ] && echo exists || echo gone)" "gone"
-rm -rf "$T" "$FB" "$RAW" "$R19" "$R20" "$LOG" "$TW" "$FSW"
+echo "== XDG 根(BUN_INSTALL / XDG_CACHE_HOME / ~/.bun)"
+TX=/tmp/verify-xdg; FX=/tmp/verify-xbin; RX=/tmp/verify-xrel
+rm -rf "$TX" "$FX" "$RX"
+case "$TX$FX$RX" in /tmp/*) ;; *) echo "verify: refusing to touch $TX" >&2; exit 1 ;; esac
+mkdir -p "$TX" "$FX" "$RX"
+XDGR="$TX/.cache/.bun"; LEGR="$TX/.bun"
+XPKG="$XDGR/install/cache/@oh-my-pi/pi-natives@18.1.21@@@1"
+mkdir -p "$XPKG/native" "$XDGR/install/global/node_modules/@oh-my-pi/pi-natives/native" \
+	"$LEGR/install/cache/@oh-my-pi/pi-natives@18.1.19@@@1/native" "$TX/usr/bin" "$TX/tmp" "$TX/.config"
+echo '{"name":"@oh-my-pi/pi-natives","version":"18.1.21"}' >"$XPKG/package.json"
+echo '{"name":"@oh-my-pi/pi-natives","version":"18.1.21"}' >"$XDGR/install/global/node_modules/@oh-my-pi/pi-natives/package.json"
+echo '{"name":"@oh-my-pi/pi-natives","version":"18.1.19"}' >"$LEGR/install/cache/@oh-my-pi/pi-natives@18.1.19@@@1/package.json"
+cp "$R/out/pi_natives.android-arm64.node" "$LEGR/install/cache/@oh-my-pi/pi-natives@18.1.19@@@1/native/"
+cp "$R/out/desktop-adapter.js" "$RX/"
+python3 -c "
+import pathlib
+b = pathlib.Path('$R/out/pi_natives.android-arm64.node').read_bytes()
+pathlib.Path('$RX/pi_natives.android-arm64.node').write_bytes(b.replace(b'__piNativesV18_1_19', b'__piNativesV18_1_21'))"
+cp "$FB/curl" "$FX/curl" 2>/dev/null || printf '#!/bin/sh\ncase "$*" in *api.github.com*) echo "{\"tag_name\": \"v18.1.21\"}"; exit 0;; esac\nexec /usr/bin/curl "$@"\n' >"$FX/curl"
+printf '#!/bin/sh\nexit 0\n' >"$FX/bun"
+chmod +x "$FX/curl" "$FX/bun"
+HOME=$TX XDG_CACHE_HOME="$TX/.cache" TMPDIR=$TX/tmp PREFIX=$TX/usr XDG_CONFIG_HOME=$TX/.config TERMUX_VERSION=0.118 \
+	PATH="$FX:$PATH" OMP_TERMUX_RELEASE_BASE="file://$RX" bash "$R/bin/omp-termux" install >/tmp/verify-xdg.log 2>&1
+chk "XDG 根:install 用在该在的版本上" "$(grep -c 'fetching pi-natives 18.1.21' /tmp/verify-xdg.log)" "1"
+[ -f "$XPKG/native/pi_natives.android-arm64.node" ] && ok "XDG 根:插件装进在用包目录" || no "XDG 根:插件没装进在用包目录"
+[ -d "$LEGR/install/cache/@oh-my-pi/pi-natives@18.1.19@@@1" ] && no "XDG 根:旧根旧拷贝未回收" || ok "XDG 根:旧根旧拷贝按规则回收"
+
+echo "== BUN_INSTALL 优先于两个默认根"
+BI="$TX/bi"
+mkdir -p "$BI/install/cache/@oh-my-pi/pi-natives@18.1.21@@@1/native" "$TX/usr/bin"
+echo '{"name":"@oh-my-pi/pi-natives","version":"18.1.21"}' >"$BI/install/cache/@oh-my-pi/pi-natives@18.1.21@@@1/package.json"
+HOME=$TX BUN_INSTALL="$BI" XDG_CACHE_HOME="$TX/.cache" TMPDIR=$TX/tmp PREFIX=$TX/usr XDG_CONFIG_HOME=$TX/.config \
+	TERMUX_VERSION=0.118 PATH="$FX:$PATH" OMP_TERMUX_RELEASE_BASE="file://$RX" bash "$R/bin/omp-termux" install \
+	>/tmp/verify-bi.log 2>&1
+[ -f "$BI/install/cache/@oh-my-pi/pi-natives@18.1.21@@@1/native/pi_natives.android-arm64.node" ] &&
+	ok "BUN_INSTALL 根里的包装上了插件" || no "BUN_INSTALL 根没装上插件"
+
+rm -rf "$T" "$FB" "$RAW" "$R19" "$R20" "$LOG" "$TW" "$FSW" "$TX" "$FX" "$RX" /tmp/verify-xdg.log /tmp/verify-bi.log
 echo
 echo "失败项: $fail"
 exit $fail

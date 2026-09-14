@@ -133,25 +133,58 @@ json_version() {
 	sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | head -n1
 }
 
-# Every installed @oh-my-pi/pi-natives directory: bun cache, bun global, npm global.
+bun_root() { # bun's own rule: BUN_INSTALL wins, XDG_CACHE_HOME moves the default, else ~/.bun
+	if [ -n "${BUN_INSTALL:-}" ]; then
+		printf '%s\n' "$BUN_INSTALL"
+	elif [ -n "${XDG_CACHE_HOME:-}" ]; then
+		printf '%s\n' "$XDG_CACHE_HOME/.bun"
+	else
+		printf '%s\n' "$HOME/.bun"
+	fi
+}
+
+bun_roots() { # every install root present, bun's own choice first, then a legacy one if it exists
+	local r seen=""
+	for r in "$(bun_root)" "$HOME/.bun" "${XDG_CACHE_HOME:-$HOME/.cache}/.bun"; do
+		[ -n "$r" ] || continue
+		case " $seen " in *" $r "*) continue ;; esac
+		[ -d "$r/install" ] || continue
+		seen="$seen $r"
+		printf '%s\n' "$r"
+	done
+}
+
+remote_bun_root() { # a POSIX snippet that prints bun's root on the device (same rule as bun_root)
+	printf '%s' 'r=""; for c in "$BUN_INSTALL" "$XDG_CACHE_HOME/.bun" "$HOME/.cache/.bun" "$HOME/.bun"; do [ -n "$c" ] && [ -d "$c/install" ] && { r="$c"; break; }; done; if [ -z "$r" ]; then if [ -n "$XDG_CACHE_HOME" ]; then r="$XDG_CACHE_HOME/.bun"; else r="$HOME/.bun"; fi; fi; printf "%s" "$r"'
+}
+
+remote_bun_env() { # a POSIX snippet that puts bun's bin directory on PATH on the device
+	printf '%s' 'r=""; for c in "$BUN_INSTALL" "$XDG_CACHE_HOME/.bun" "$HOME/.cache/.bun" "$HOME/.bun"; do [ -n "$c" ] && [ -d "$c/install" ] && { r="$c"; break; }; done; if [ -z "$r" ]; then if [ -n "$XDG_CACHE_HOME" ]; then r="$XDG_CACHE_HOME/.bun"; else r="$HOME/.bun"; fi; fi; PATH="$r/bin:$PATH"; export PATH'
+}
+
+search_roots() { # every directory that may hold an installed @oh-my-pi/pi-natives
+	local r
+	while IFS= read -r r; do
+		printf '%s\n' "$r/install/cache" "$r/install/global/node_modules"
+	done < <(bun_roots)
+	printf '%s\n' "${TERMUX_PREFIX:-/nonexistent}/lib/node_modules" "${NPM_CONFIG_PREFIX:-/nonexistent}/lib/node_modules"
+}
+
+# Every installed @oh-my-pi/pi-natives directory: bun cache (both layouts), bun global, npm global.
 natives_dirs() {
 	local root d
-	for root in \
-		"${BUN_INSTALL:-$HOME/.bun}/install/cache" \
-		"${BUN_INSTALL:-$HOME/.bun}/install/global/node_modules" \
-		"${TERMUX_PREFIX:-/nonexistent}/lib/node_modules" \
-		"${NPM_CONFIG_PREFIX:-/nonexistent}/lib/node_modules"; do
+	while IFS= read -r root; do
 		[ -d "$root" ] || continue
 		while IFS= read -r d; do
 			[ -f "$d/package.json" ] && printf '%s\n' "$d"
 		done < <(find -L "$root" -maxdepth 3 -type d -path '*@oh-my-pi/pi-natives*' 2>/dev/null)
-	done | sort -u
+	done < <(search_roots) | sort -u
 }
 
 installed_version() { # the copy in use: the global tree's, else the newest installed
 	local root d v best=""
-	root="${BUN_INSTALL:-$HOME/.bun}"
-	if [ -f "$root/install/global/node_modules/@oh-my-pi/pi-natives/package.json" ]; then
+	root="$(bun_roots | head -n1)"
+	if [ -n "$root" ] && [ -f "$root/install/global/node_modules/@oh-my-pi/pi-natives/package.json" ]; then
 		json_version "$root/install/global/node_modules/@oh-my-pi/pi-natives/package.json"
 		return 0
 	fi
@@ -166,10 +199,14 @@ installed_version() { # the copy in use: the global tree's, else the newest inst
 }
 
 bun_path() { # "" when bun is not installed
-	local b
+	local b r
 	b="$(command -v bun 2>/dev/null || true)"
-	[ -n "$b" ] || b="$HOME/.bun/bin/bun"
-	[ -x "$b" ] && printf '%s\n' "$b"
+	if [ -z "$b" ]; then
+		for r in "$(bun_root)" $(bun_roots); do
+			[ -x "$r/bin/bun" ] && { b="$r/bin/bun"; break; }
+		done
+	fi
+	[ -n "$b" ] && [ -x "$b" ] && printf '%s\n' "$b"
 }
 
 file_sha() { [ -f "${1:-}" ] || return 0; sha256sum "$1" 2>/dev/null | cut -d' ' -f1 || true; }
@@ -203,11 +240,14 @@ install_addon() { # $1 = path to a .node
 	local addon="$1" target_version="" n=0 d v artifact_dir
 	[ -f "$addon" ] || die "no artifact to install: $addon"
 	artifact_dir="$(cd "$(dirname "$addon")" && pwd)"
-	if [ -f "$SRC/packages/natives/package.json" ]; then
+	# The sentinel inside the artifact is what the loader checks, so it decides the target version. A build tree
+	# is only a fallback for an artifact whose sentinel cannot be read — a release download never matches a tree
+	# left over from an older build.
+	target_version="$(artifact_version "$addon")"
+	if [ -n "$target_version" ]; then
+		msg "target version from the artifact's sentinel: $target_version"
+	elif [ -f "$SRC/packages/natives/package.json" ]; then
 		target_version="$(json_version "$SRC/packages/natives/package.json")"
-	else
-		target_version="$(artifact_version "$addon")"
-		[ -n "$target_version" ] && msg "target version from the artifact's sentinel: $target_version"
 	fi
 	while IFS= read -r d; do
 		v="$(json_version "$d/package.json")"
@@ -224,31 +264,32 @@ install_addon() { # $1 = path to a .node
 	[ "$n" -gt 0 ] || die "no matching @oh-my-pi/pi-natives directory found; install omp first: bun install -g @oh-my-pi/pi-coding-agent"
 }
 
-link_global_tree() { # On Termux, `bun install -g` (upstream's documented way) leaves ~/.bun/bin/omp resolving
-	# into ~/.bun/install/cache/<pkg>@<version>@@@1, and nothing on that path has a node_modules — the same install
-	# on Linux resolves into ~/.bun/install/global/node_modules/<pkg>, whose siblings satisfy it. Packages that
+link_global_tree() { # On Termux, `bun install -g` (upstream's documented way) leaves <root>/bin/omp resolving
+	# into <root>/install/cache/<pkg>@<version>@@@1, and nothing on that path has a node_modules — the same
+	# install on Linux resolves into <root>/install/global/node_modules/<pkg>, whose siblings satisfy it. Packages that
 	# dist/cli.js imports lazily (@oh-my-pi/pi-natives{,/clipboard,/desktop,/vcs}, @babel/parser, puppeteer-core,
 	# ...) therefore fail on the device, while the rest of the CLI starts fine: `omp stats` dies with
 	# "Cannot find module '@oh-my-pi/pi-natives'". Linking the global tree into <cache>/node_modules gives the
 	# cache tree the resolution the global tree already has.
 	local root cache global entry name
-	root="${BUN_INSTALL:-$HOME/.bun}"
-	cache="$root/install/cache"
-	global="$root/install/global/node_modules"
-	[ -d "$cache" ] && [ -d "$global" ] || return 0
-	mkdir -p "$cache/node_modules"
-	for entry in "$global"/*; do
-		[ -e "$entry" ] || continue
-		name="$(basename "$entry")"
-		if [ -L "$cache/node_modules/$name" ]; then
-			ln -sfn "$entry" "$cache/node_modules/$name"
-		elif [ -d "$cache/node_modules/$name" ]; then
-			# `ln -sfn` into an existing directory creates a link *inside* it; leave the directory alone.
-			warn "not linking $name: $cache/node_modules/$name is a directory, not a link"
-		elif [ ! -e "$cache/node_modules/$name" ]; then
-			ln -s "$entry" "$cache/node_modules/$name"
-		fi
-	done
+	while IFS= read -r root; do
+		cache="$root/install/cache"
+		global="$root/install/global/node_modules"
+		[ -d "$cache" ] && [ -d "$global" ] || continue
+		mkdir -p "$cache/node_modules"
+		for entry in "$global"/*; do
+			[ -e "$entry" ] || continue
+			name="$(basename "$entry")"
+			if [ -L "$cache/node_modules/$name" ]; then
+				ln -sfn "$entry" "$cache/node_modules/$name"
+			elif [ -d "$cache/node_modules/$name" ]; then
+				# `ln -sfn` into an existing directory creates a link *inside* it; leave the directory alone.
+				warn "not linking $name: $cache/node_modules/$name is a directory, not a link"
+			elif [ ! -e "$cache/node_modules/$name" ]; then
+				ln -s "$entry" "$cache/node_modules/$name"
+			fi
+		done
+	done < <(bun_roots)
 }
 
 has_other_link_ref() { # $1 = candidate dir, $2 = bun's own nested sibling link (ignored)
@@ -256,12 +297,13 @@ has_other_link_ref() { # $1 = candidate dir, $2 = bun's own nested sibling link 
 	want="$(readlink -f "$1" 2>/dev/null)"
 	[ -n "$want" ] || return 1
 	ignore="$(readlink -f "${2:-/nonexistent}" 2>/dev/null)"
-	root="${BUN_INSTALL:-$HOME/.bun}"
-	while IFS= read -r l; do
-		[ "$l" = "${2:-}" ] && continue
-		[ -n "$ignore" ] && [ "$l" = "$ignore" ] && continue
-		[ "$(readlink -f "$l" 2>/dev/null)" = "$want" ] && return 0
-	done < <(find "$root/install" -maxdepth 6 -type l 2>/dev/null)
+	while IFS= read -r root; do
+		while IFS= read -r l; do
+			[ "$l" = "${2:-}" ] && continue
+			[ -n "$ignore" ] && [ "$l" = "$ignore" ] && continue
+			[ "$(readlink -f "$l" 2>/dev/null)" = "$want" ] && return 0
+		done < <(find "$root/install" -maxdepth 6 -type l 2>/dev/null)
+	done < <(bun_roots)
 	return 1
 }
 
@@ -270,24 +312,25 @@ prune_superseded() { # $1 = the version now installed; drops older pi-natives co
 	# not descend into <cache>/node_modules/<scope>, which is the link that reaches the copy in use.
 	local keep="${1:-}" root cache d v sz base stem nested
 	[ -n "$keep" ] || return 0
-	root="${BUN_INSTALL:-$HOME/.bun}"
-	cache="$root/install/cache"
-	[ -d "$cache" ] || return 0
-	while IFS= read -r d; do
-		v="$(json_version "$d/package.json")"
-		[ -n "$v" ] && [ "$v" != "$keep" ] || continue
-		[ "$(printf '%s\n%s\n' "$v" "$keep" | sort -V | head -n1)" = "$v" ] || continue
-		base="$(basename "$d")"
-		stem="${base%@@@1}"
-		nested="$(dirname "$d")/${stem%@*}/${stem#*@}@@@1"
-		if has_other_link_ref "$d" "$nested"; then
-			warn "keeping the $v copy: a link still points at it"
-			continue
-		fi
-		sz="$(du -sh "$d" 2>/dev/null | cut -f1)"
-		[ -L "$nested" ] && rm -f "$nested"
-		rm -rf "$d" && msg "removed the superseded $v copy${sz:+ ($sz)}"
-	done < <(find "$cache" -maxdepth 3 -type d -path '*@oh-my-pi/pi-natives*' 2>/dev/null)
+	while IFS= read -r root; do
+		cache="$root/install/cache"
+		[ -d "$cache" ] || continue
+		while IFS= read -r d; do
+			v="$(json_version "$d/package.json")"
+			[ -n "$v" ] && [ "$v" != "$keep" ] || continue
+			[ "$(printf '%s\n%s\n' "$v" "$keep" | sort -V | head -n1)" = "$v" ] || continue
+			base="$(basename "$d")"
+			stem="${base%@@@1}"
+			nested="$(dirname "$d")/${stem%@*}/${stem#*@}@@@1"
+			if has_other_link_ref "$d" "$nested"; then
+				warn "keeping the $v copy: a link still points at it"
+				continue
+			fi
+			sz="$(du -sh "$d" 2>/dev/null | cut -f1)"
+			[ -L "$nested" ] && rm -f "$nested"
+			rm -rf "$d" && msg "removed the superseded $v copy${sz:+ ($sz)}"
+		done < <(find "$cache" -maxdepth 3 -type d -path '*@oh-my-pi/pi-natives*' 2>/dev/null)
+	done < <(bun_roots)
 }
 
 fetch_release() { # $1 = pi-natives version; puts the addon in RELEASE_ADDON, dies when the release is missing
@@ -648,20 +691,20 @@ device_scp() { # $1 = local file, $2 = remote dir (relative to $HOME)
 }
 
 remote_bun() { # $1 = bun arguments as one shell-quoted string
-	device_ssh 'PATH="$HOME/.bun/bin:$PATH"; export PATH; bun '"$1"
+	device_ssh "$(remote_bun_env); bun $1"
 }
 
 ensure_device_bun() {
-	if device_ssh 'command -v bun >/dev/null 2>&1 || [ -x "$HOME/.bun/bin/bun" ]'; then
+	if device_ssh "$(remote_bun_env); command -v bun >/dev/null 2>&1"; then
 		msg "bun is present on the device"
 		return 0
 	fi
 	msg "installing bun on the device (pkg install bun)"
-	device_ssh 'pkg install -y bun >/dev/null 2>&1 || true; command -v bun >/dev/null 2>&1 || [ -x "$HOME/.bun/bin/bun" ]' && return 0
+	device_ssh "$(remote_bun_env); { pkg install -y bun >/dev/null 2>&1 || true; }; command -v bun >/dev/null 2>&1" && return 0
 	msg "pkg install did not provide bun; fetching the Android build"
-	device_ssh 'tmp="${TMPDIR:-$HOME}/omp-bun.$$"; mkdir -p "$tmp" "$HOME/.bun/bin" && curl -fsSL -o "$tmp/bun.zip" https://github.com/oven-sh/bun/releases/latest/download/bun-linux-aarch64-android.zip && unzip -oq "$tmp/bun.zip" -d "$tmp" && cp -f "$tmp"/bun-linux-aarch64-android/bun "$HOME/.bun/bin/bun" && chmod +x "$HOME/.bun/bin/bun"; rc=$?; rm -rf "$tmp"; exit $rc' ||
+	device_ssh 'tmp="${TMPDIR:-$HOME}/omp-bun.$$"; dir=$('"$(remote_bun_root)"'); mkdir -p "$tmp" "$dir/bin" && curl -fsSL -o "$tmp/bun.zip" https://github.com/oven-sh/bun/releases/latest/download/bun-linux-aarch64-android.zip && unzip -oq "$tmp/bun.zip" -d "$tmp" && cp -f "$tmp"/bun-linux-aarch64-android/bun "$dir/bin/bun" && chmod +x "$dir/bin/bun"; rc=$?; rm -rf "$tmp"; exit $rc' ||
 		die "could not install bun on the device"
-	msg "bun installed at ~/.bun/bin/bun"
+		msg "bun installed next to bun's own root ($(bun_root)/bin/bun)"
 }
 
 ensure_device_version() { # $1 = target version; installs omp on the device when it differs
@@ -697,7 +740,7 @@ device_upload() {
 }
 
 device_installed_version() { # "" when the device has no @oh-my-pi/pi-natives or ssh fails
-	device_ssh 'g="$HOME/.bun/install/global/node_modules/@oh-my-pi/pi-natives/package.json"; if [ -f "$g" ]; then sed -n "s/.*\"version\": *\"\([^\"]*\)\".*/\1/p" "$g" | head -n1; exit 0; fi; for p in $HOME/.bun/install/cache/@oh-my-pi/pi-natives@*/package.json; do [ -f "$p" ] && sed -n "s/.*\"version\": *\"\([^\"]*\)\".*/\1/p" "$p" | head -n1; done | sort -V | tail -n1; exit 0' 2>/dev/null || true
+	device_ssh 'r=$('"$(remote_bun_root)"'); g="$r/install/global/node_modules/@oh-my-pi/pi-natives/package.json"; if [ -f "$g" ]; then sed -n "s/.*\"version\": *\"\([^\"]*\)\".*/\1/p" "$g" | head -n1; exit 0; fi; for p in "$r"/install/cache/@oh-my-pi/pi-natives@*/package.json $HOME/.bun/install/cache/@oh-my-pi/pi-natives@*/package.json; do [ -f "$p" ] && sed -n "s/.*\"version\": *\"\([^\"]*\)\".*/\1/p" "$p" | head -n1; done | sort -V | tail -n1; exit 0' 2>/dev/null || true
 }
 
 # Sets TARGET_VERSION and TARGET_FILE (empty unless the caller passed a local artifact).
