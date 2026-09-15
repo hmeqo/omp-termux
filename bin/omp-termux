@@ -159,9 +159,9 @@ bun_root() { # bun's own rule: BUN_INSTALL wins, XDG_CACHE_HOME moves the defaul
 	fi
 }
 
-bun_roots() { # every install root present, bun's own choice first, then a legacy one if it exists
+bun_roots() { # every install root present, in the order this tool reads the environment (see probe below)
 	local r seen=""
-	for r in "$(bun_root)" "$HOME/.bun" "${XDG_CACHE_HOME:-$HOME/.cache}/.bun"; do
+	for r in "${BUN_INSTALL:-}" "${XDG_CACHE_HOME:+$XDG_CACHE_HOME/.bun}" "$HOME/.cache/.bun" "$HOME/.bun"; do
 		[ -n "$r" ] || continue
 		case " $seen " in *" $r "*) continue ;; esac
 		[ -d "$r/install" ] || continue
@@ -170,15 +170,41 @@ bun_roots() { # every install root present, bun's own choice first, then a legac
 	done
 }
 
-# bun's root rule, as a POSIX snippet the device evaluates itself (one definition, three callers).
-BUN_ROOT_PROBE='r=""; for c in "$BUN_INSTALL" "$XDG_CACHE_HOME/.bun" "$HOME/.cache/.bun" "$HOME/.bun"; do [ -n "$c" ] && [ -d "$c/install" ] && { r="$c"; break; }; done; if [ -z "$r" ]; then if [ -n "$XDG_CACHE_HOME" ]; then r="$XDG_CACHE_HOME/.bun"; else r="$HOME/.bun"; fi; fi'
+# --- environment resolution -------------------------------------------------------------------------
 
-remote_bun_root() { # a snippet that prints bun's root on the device (same rule as bun_root)
-	printf '%s' "$BUN_ROOT_PROBE; printf \"%s\" \"\$r\""
+bun_active_root() { # the root in use: one that already carries omp, else any existing, else the default
+	local r
+	while IFS= read -r r; do
+		[ -f "$r/install/global/node_modules/@oh-my-pi/pi-coding-agent/package.json" ] &&
+			{ printf '%s\n' "$r"; return 0; }
+	done < <(bun_roots)
+	while IFS= read -r r; do printf '%s\n' "$r"; return 0; done < <(bun_roots)
+	bun_root
 }
 
-remote_bun_env() { # a snippet that puts bun's bin directory on PATH on the device
-	printf '%s' "$BUN_ROOT_PROBE; PATH=\"\$r/bin:\$PATH\"; export PATH"
+# Pin this shell, and anything it spawns, at the root in use: bun installs where BUN_INSTALL points,
+# not where PATH does.
+use_root() {
+	local r
+	r="$(bun_active_root)"
+	BUN_INSTALL="$r"; export BUN_INSTALL
+	case ":$PATH:" in
+		*":$r/bin:"*) ;;
+		*) PATH="$r/bin:$PATH"; export PATH ;;
+	esac
+}
+
+# The same rule as a POSIX snippet the device evaluates itself (see bun_active_root).
+REMOTE_ROOT_PROBE='r=""; for c in "$BUN_INSTALL" "$XDG_CACHE_HOME/.bun" "$HOME/.cache/.bun" "$HOME/.bun"; do [ -n "$c" ] && [ -d "$c/install" ] || continue; [ -z "$r" ] && r="$c"; [ -f "$c/install/global/node_modules/@oh-my-pi/pi-coding-agent/package.json" ] && { r="$c"; break; }; done; if [ -z "$r" ]; then if [ -n "$XDG_CACHE_HOME" ]; then r="$XDG_CACHE_HOME/.bun"; else r="$HOME/.bun"; fi; fi'
+
+remote_bun_root() { # a snippet that prints the device's root in use
+	printf '%s; printf "%%s" "$r"' "$REMOTE_ROOT_PROBE"
+}
+
+# Every command the tool runs on the device goes through this: it pins BUN_INSTALL so bun installs into
+# the root in use rather than its own default.
+remote_bun_env() { # a snippet that runs a device command inside the root in use
+	printf '%s; BUN_INSTALL="$r"; export BUN_INSTALL; PATH="$r/bin:$PATH"; export PATH' "$REMOTE_ROOT_PROBE"
 }
 
 search_roots() { # every directory that may hold an installed @oh-my-pi/pi-natives
@@ -200,10 +226,10 @@ natives_dirs() {
 	done < <(search_roots) | sort -u
 }
 
-installed_version() { # the copy in use: the global tree's, else the newest installed
+installed_version() { # the version the root in use carries: its global tree, else the newest installed
 	local root d v best=""
-	root="$(bun_roots | head -n1)"
-	if [ -n "$root" ] && [ -f "$root/install/global/node_modules/@oh-my-pi/pi-natives/package.json" ]; then
+	root="$(bun_active_root)"
+	if [ -f "$root/install/global/node_modules/@oh-my-pi/pi-natives/package.json" ]; then
 		json_version "$root/install/global/node_modules/@oh-my-pi/pi-natives/package.json"
 		return 0
 	fi
@@ -232,6 +258,16 @@ bun_path() { # "" when bun is not installed
 		fi
 	fi
 	[ -n "$b" ] && [ -x "$b" ] && printf '%s\n' "$b"
+}
+
+omp_path() { # the `omp` the user runs: PATH first, then the roots (a non-interactive shell has neither)
+	local b r
+	b="$(command -v omp 2>/dev/null || true)"
+	[ -n "$b" ] && [ -x "$b" ] && { printf '%s\n' "$b"; return 0; }
+	while IFS= read -r r; do
+		[ -x "$r/bin/omp" ] && { printf '%s\n' "$r/bin/omp"; return 0; }
+	done < <(bun_roots)
+	return 0
 }
 
 file_sha() { [ -f "${1:-}" ] || return 0; sha256sum "$1" 2>/dev/null | cut -d' ' -f1 || true; }
@@ -265,9 +301,8 @@ install_addon() { # $1 = path to a .node
 	local addon="$1" target_version="" n=0 d v artifact_dir
 	[ -f "$addon" ] || die "no artifact to install: $addon"
 	artifact_dir="$(cd "$(dirname "$addon")" && pwd)"
-	# The sentinel inside the artifact is what the loader checks, so it decides the target version. A build tree
-	# is only a fallback for an artifact whose sentinel cannot be read — a release download never matches a tree
-	# left over from an older build.
+	# The artifact's sentinel is what the loader checks, so it decides the target version; a build tree is
+	# only a fallback when the sentinel cannot be read.
 	target_version="$(artifact_version "$addon")"
 	if [ -n "$target_version" ]; then
 		msg "target version from the artifact's sentinel: $target_version"
@@ -290,12 +325,9 @@ install_addon() { # $1 = path to a .node
 }
 
 link_global_tree() { # On Termux, `bun install -g` (upstream's documented way) leaves <root>/bin/omp resolving
-	# into <root>/install/cache/<pkg>@<version>@@@1, and nothing on that path has a node_modules — the same
-	# install on Linux resolves into <root>/install/global/node_modules/<pkg>, whose siblings satisfy it. Packages that
-	# dist/cli.js imports lazily (@oh-my-pi/pi-natives{,/clipboard,/desktop,/vcs}, @babel/parser, puppeteer-core,
-	# ...) therefore fail on the device, while the rest of the CLI starts fine: `omp stats` dies with
-	# "Cannot find module '@oh-my-pi/pi-natives'". Linking the global tree into <cache>/node_modules gives the
-	# cache tree the resolution the global tree already has.
+	# into <root>/install/cache/<pkg>@<version>@@@1, where no node_modules exists, so lazily imported
+	# packages fail — `omp stats` dies with "Cannot find module '@oh-my-pi/pi-natives'" — while the rest of
+	# the CLI starts. Linking the global tree into <cache>/node_modules restores that resolution.
 	local root cache global entry name
 	while IFS= read -r root; do
 		cache="$root/install/cache"
@@ -363,6 +395,7 @@ device_ensure_bun() { # install bun on this device when it is missing; the works
 	[ -n "$(bun_path)" ] && return 0
 	msg "installing bun"
 	if command -v pkg >/dev/null 2>&1 && pkg install -y bun >/dev/null 2>&1 && [ -n "$(bun_path)" ]; then
+		use_root
 		return 0
 	fi
 	root="$(bun_root)"
@@ -373,8 +406,8 @@ device_ensure_bun() { # install bun on this device when it is missing; the works
 	cp -f "$tmp"/bun-linux-aarch64-android/bun "$root/bin/bun" || { rm -rf "$tmp"; return 1; }
 	chmod +x "$root/bin/bun"
 	rm -rf "$tmp"
-	PATH="$root/bin:$PATH"
-	export PATH
+	BUN_INSTALL="$root"; export BUN_INSTALL
+	PATH="$root/bin:$PATH"; export PATH
 	[ -n "$(bun_path)" ]
 }
 
@@ -424,6 +457,7 @@ device_install() { # $1 = version, "latest", or a path to a .node; no argument =
 	fetch_release "$want"
 	current="$(installed_version)"
 	if [ "$current" != "$want" ]; then
+		use_root
 		bun="$(bun_path)" || die "bun not found; install it first: pkg install bun"
 		msg "installing omp $want on this device (currently ${current:-none})"
 		"$bun" install -g "@oh-my-pi/pi-coding-agent@$want" || die "installing omp $want failed"
@@ -459,22 +493,29 @@ EOF
 	done < <(natives_dirs)
 	rm -f "$probe"
 	rmdir "$probe_dir" 2>/dev/null || true
-	# `omp` is whatever the user installed with bun; never ours.
-	if real="$(command -v omp 2>/dev/null)"; then
+	# `omp` is whatever the user installed with bun, never ours. The roots are searched because the shell
+	# the tool runs in has no bun bin directory on PATH, and a copy outside the root in use is reported.
+	real="$(omp_path)"
+	if [ -n "$real" ]; then
 		msg "$real --version"
 		"$real" --version || { warn "omp still fails to start"; rc=1; }
+		case "$real" in
+			"$(bun_active_root)"/bin/omp) ;;
+			*) warn "$real is not the copy in use ($(bun_active_root)/bin/omp)" ;;
+		esac
 	else
-		warn "no omp binary on PATH to smoke-test with"
+		warn "no omp binary found (PATH and $(bun_active_root)/bin); cannot smoke-test the CLI"
 	fi
 	[ "$rc" -eq 0 ] || die "verification failed"
 	msg "all good"
 }
 
 print_status() {
-	local d v f
+	local d v f omp_bin
+	omp_bin="$(omp_path)"
 	printf 'mode       : %s\n' "$MODE"
 	printf 'tool       : %s\n' "$SELF"
-	printf 'omp binary : %s\n' "$(command -v omp 2>/dev/null || echo 'not found on PATH')"
+	printf 'omp binary : %s\n' "${omp_bin:-not found}"
 	echo
 	while IFS= read -r d; do
 		v="$(json_version "$d/package.json")"
@@ -776,7 +817,7 @@ device_run() { # $1 = command line for the script on the device
 	device_ssh "mkdir -p ~/$SCRATCH" ||
 		die "ssh failed — is sshd running on the device (pkg install openssh; sshd) and the port right?"
 	device_scp "$SELF" "$SCRATCH"
-	device_ssh "OMP_TERMUX_MODE=device bash ~/$SCRATCH/omp-termux $1; rc=\$?; rm -rf ~/$SCRATCH; exit \$rc"
+	device_ssh "$(remote_bun_env); OMP_TERMUX_MODE=device bash ~/$SCRATCH/omp-termux $1; rc=\$?; rm -rf ~/$SCRATCH; exit \$rc"
 }
 
 # Upload the built artifact next to the tool in the same scratch dir.
@@ -791,7 +832,7 @@ device_upload() {
 }
 
 device_installed_version() { # "" when the device has no @oh-my-pi/pi-natives or ssh fails
-	device_ssh 'r=$('"$(remote_bun_root)"'); g="$r/install/global/node_modules/@oh-my-pi/pi-natives/package.json"; if [ -f "$g" ]; then sed -n "s/.*\"version\": *\"\([^\"]*\)\".*/\1/p" "$g" | head -n1; exit 0; fi; for p in "$r"/install/cache/@oh-my-pi/pi-natives@*/package.json $HOME/.bun/install/cache/@oh-my-pi/pi-natives@*/package.json; do [ -f "$p" ] && sed -n "s/.*\"version\": *\"\([^\"]*\)\".*/\1/p" "$p" | head -n1; done | sort -V | tail -n1; exit 0' 2>/dev/null || true
+	device_ssh 'r=$('"$(remote_bun_root)"'); for p in "$r"/install/global/node_modules/@oh-my-pi/pi-natives/package.json "$r"/install/cache/@oh-my-pi/pi-natives@*/package.json; do [ -f "$p" ] && sed -n "s/.*\"version\": *\"\([^\"]*\)\".*/\1/p" "$p" | head -n1; done | sort -V | tail -n1; exit 0' 2>/dev/null || true
 }
 
 # Sets TARGET_VERSION and TARGET_FILE (empty unless the caller passed a local artifact).
@@ -916,15 +957,16 @@ cmd_device() { # $1 = user@host to save; no argument shows the current target
 }
 
 device_doctor() {
-	local bun_bin
+	local bun_bin omp_bin
 	bun_bin="$(bun_path)"
+	omp_bin="$(omp_path)"
 	msg "environment check (device)"
 	printf '  Termux         : %s\n' "${TERMUX_VERSION:-not detected}"
 	printf '  uname          : %s %s\n' "$(uname -s)" "$(uname -m)"
 	printf '  tool           : %s\n' "$SELF"
 	printf '  bun            : %s\n' "${bun_bin:-MISSING}"
 	printf '  rustc / cargo  : %s / %s\n' "$(have rustc && rustc -vV | sed -n 's/^release: /release=/p' || echo 'MISSING (only needed for omp-termux build)')" "$(have cargo && cargo --version || echo MISSING)"
-	printf '  omp binary     : %s\n' "$(command -v omp 2>/dev/null || echo 'not found on PATH')"
+	printf '  omp binary     : %s\n' "${omp_bin:-not found}"
 	printf '  pi-natives     : %s\n' "$(installed_version || echo 'not found')"
 	printf '  free space     : %s\n' "$(df -h "$HOME" 2>/dev/null | awk 'NR==2{print $4}')"
 	[ -n "$bun_bin" ] || warn "bun is missing: pkg install bun (or curl -fsSL https://bun.sh/install | bash)"
