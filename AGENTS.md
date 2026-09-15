@@ -13,7 +13,7 @@ carrying upstream PR #6350, or downloaded prebuilt from this repo's GitHub relea
 One bash script is the product; every other file supports it.
 
 - `bin/omp-termux` — the whole tool. `MODE=workstation|device` is decided once at startup (`TERMUX_VERSION` set
-  or `/data/data/com.termux/files/usr` present ⇒ device; `OMP_TERMUX_MODE` overrides). ~60 helper functions sit
+  or `/data/data/com.termux/files/usr` present ⇒ device; `OMP_TERMUX_MODE` overrides). ~70 helper functions sit
   under six `# --- section ---` banners (installed-addon inspection, install, device build, workstation build,
   device access, dispatch); all verbs are one `case` at the end of the file.
 - Build path (workstation or CI): `workstation_build` → `fetch_source` (clone `UPSTREAM` at tag `v<version>` into

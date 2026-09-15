@@ -10,7 +10,7 @@ for keeping it in step.
 
 ### Prebuilt
 
-Needs Termux with `bun` and omp already installed there (`bun install -g @oh-my-pi/pi-coding-agent`).
+Needs Termux with `curl`: the script installs `bun` and omp first if they are missing.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/hmeqo/omp-termux/main/install.sh | sh
@@ -45,8 +45,8 @@ Workstation (tested on Linux x86_64): `rustup`, `bun` ≥ 1.3.14, an Android NDK
 (taken from `OMP_TERMUX_NDK`, `ANDROID_NDK_ROOT`, `ANDROID_NDK_HOME` or your SDK's newest `ndk/*`), `cmake`,
 `ninja`, `git`, `curl`, `unzip`, `ssh`. `omp-termux doctor` names whatever is missing.
 
-Device: Android 7+ (API 24), aarch64, with `sshd` (`pkg install openssh`). bun and omp are installed
-automatically by `omp-termux install`.
+Device: Android 7+ (API 24), aarch64, with `sshd` (`pkg install openssh`). Missing `bun` and omp are installed
+automatically.
 
 ## Commands
 

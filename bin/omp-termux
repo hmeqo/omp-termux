@@ -28,7 +28,7 @@ BINDIR="$HOME/.local/bin"
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 SELF_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 PROJ="$(dirname "$SELF_DIR")"          # this file lives in <project>/bin/
-SCRATCH=".cache/omp-termux"              # scratch dir on the device; removed after every run
+SCRATCH=".cache/omp-termux"             # scratch dir on the device; removed after every run
 WORK="$PROJ/work"
 OUT="$PROJ/out"
 SRC="$WORK/src"
@@ -38,8 +38,10 @@ CARGO_TARGET="${CARGO_TARGET_DIR:-$WORK/cargo-target}"
 ADDON="pi_natives.android-arm64.node"
 API=24
 UPSTREAM="https://github.com/can1357/oh-my-pi.git"
+UPSTREAM_REPO="${UPSTREAM#https://github.com/}"    # owner/repo, for the release and patch URLs
+UPSTREAM_REPO="${UPSTREAM_REPO%.git}"
 PR=6350
-PR_PATCH_URL="https://patch-diff.githubusercontent.com/raw/can1357/oh-my-pi/pull/${PR}.diff"
+PR_PATCH_URL="https://patch-diff.githubusercontent.com/raw/$UPSTREAM_REPO/pull/${PR}.diff"
 REPO="${OMP_TERMUX_REPO:-hmeqo/omp-termux}"
 
 if [ -n "${TERMUX_VERSION:-}" ] || [ -d /data/data/com.termux/files/usr ]; then
@@ -111,6 +113,11 @@ device_port() { # explicit setting > what ssh itself resolves for this host > Te
 }
 
 usage() { sed -n '4,14p' "$SELF" | sed 's/^# \{0,1\}//'; }
+reject_option() { # $1 = the argument to check; option-looking arguments are always a mistake here
+	case "${1:-}" in
+		-*) die "unexpected option: $1 (run 'omp-termux help')" ;;
+	esac
+}
 
 vendored_patch() {
 	local candidate
@@ -121,9 +128,18 @@ vendored_patch() {
 }
 PATCH="$(vendored_patch || printf '%s' "$WORK/upstream-${PR}.diff")"
 
-latest_version() { # "" when the lookup fails
-	curl -fsSL --max-time 30 "https://api.github.com/repos/can1357/oh-my-pi/releases/latest" |
-		sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([^"]*\)".*/\1/p' | head -n1 || true
+github_latest_tag() { # $1 = owner/repo, $2 = tag prefix to strip; "" when the lookup fails
+	curl -fsSL --max-time 30 "https://api.github.com/repos/$1/releases/latest" 2>/dev/null |
+		sed -n "s/.*\"tag_name\"[[:space:]]*:[[:space:]]*\"$2\([^\"]*\)\".*/\1/p" | head -n1 || true
+}
+
+latest_version() { github_latest_tag "$UPSTREAM_REPO" v; }           # newest upstream omp release
+latest_release_version() { github_latest_tag "$REPO" 'omp-'; }       # newest release this repository publishes
+
+resolve_latest() { # sets LATEST to the newest upstream release, or dies
+	LATEST="$(latest_version)"
+	[ -n "$LATEST" ] || die "cannot resolve the latest upstream release; pass one: omp-termux install <version>"
+	msg "latest upstream release: $LATEST"
 }
 
 # --- inspecting the installed addon ------------------------------------------------------------------
@@ -154,12 +170,15 @@ bun_roots() { # every install root present, bun's own choice first, then a legac
 	done
 }
 
-remote_bun_root() { # a POSIX snippet that prints bun's root on the device (same rule as bun_root)
-	printf '%s' 'r=""; for c in "$BUN_INSTALL" "$XDG_CACHE_HOME/.bun" "$HOME/.cache/.bun" "$HOME/.bun"; do [ -n "$c" ] && [ -d "$c/install" ] && { r="$c"; break; }; done; if [ -z "$r" ]; then if [ -n "$XDG_CACHE_HOME" ]; then r="$XDG_CACHE_HOME/.bun"; else r="$HOME/.bun"; fi; fi; printf "%s" "$r"'
+# bun's root rule, as a POSIX snippet the device evaluates itself (one definition, three callers).
+BUN_ROOT_PROBE='r=""; for c in "$BUN_INSTALL" "$XDG_CACHE_HOME/.bun" "$HOME/.cache/.bun" "$HOME/.bun"; do [ -n "$c" ] && [ -d "$c/install" ] && { r="$c"; break; }; done; if [ -z "$r" ]; then if [ -n "$XDG_CACHE_HOME" ]; then r="$XDG_CACHE_HOME/.bun"; else r="$HOME/.bun"; fi; fi'
+
+remote_bun_root() { # a snippet that prints bun's root on the device (same rule as bun_root)
+	printf '%s' "$BUN_ROOT_PROBE; printf \"%s\" \"\$r\""
 }
 
-remote_bun_env() { # a POSIX snippet that puts bun's bin directory on PATH on the device
-	printf '%s' 'r=""; for c in "$BUN_INSTALL" "$XDG_CACHE_HOME/.bun" "$HOME/.cache/.bun" "$HOME/.bun"; do [ -n "$c" ] && [ -d "$c/install" ] && { r="$c"; break; }; done; if [ -z "$r" ]; then if [ -n "$XDG_CACHE_HOME" ]; then r="$XDG_CACHE_HOME/.bun"; else r="$HOME/.bun"; fi; fi; PATH="$r/bin:$PATH"; export PATH'
+remote_bun_env() { # a snippet that puts bun's bin directory on PATH on the device
+	printf '%s' "$BUN_ROOT_PROBE; PATH=\"\$r/bin:\$PATH\"; export PATH"
 }
 
 search_roots() { # every directory that may hold an installed @oh-my-pi/pi-natives
@@ -201,10 +220,16 @@ installed_version() { # the copy in use: the global tree's, else the newest inst
 bun_path() { # "" when bun is not installed
 	local b r
 	b="$(command -v bun 2>/dev/null || true)"
+	# a PATH hit can be a stale hash entry or a noexec mount: fall through to the install roots then
+	[ -n "$b" ] && [ -x "$b" ] || b=""
 	if [ -z "$b" ]; then
-		for r in "$(bun_root)" $(bun_roots); do
-			[ -x "$r/bin/bun" ] && { b="$r/bin/bun"; break; }
-		done
+		r="$(bun_root)"
+		[ -x "$r/bin/bun" ] && b="$r/bin/bun"
+		if [ -z "$b" ]; then
+			while IFS= read -r r; do
+				[ -x "$r/bin/bun" ] && { b="$r/bin/bun"; break; }
+			done < <(bun_roots)
+		fi
 	fi
 	[ -n "$b" ] && [ -x "$b" ] && printf '%s\n' "$b"
 }
@@ -333,6 +358,26 @@ prune_superseded() { # $1 = the version now installed; drops older pi-natives co
 	done < <(bun_roots)
 }
 
+device_ensure_bun() { # install bun on this device when it is missing; the workstation path has its own copy
+	local root tmp
+	[ -n "$(bun_path)" ] && return 0
+	msg "installing bun"
+	if command -v pkg >/dev/null 2>&1 && pkg install -y bun >/dev/null 2>&1 && [ -n "$(bun_path)" ]; then
+		return 0
+	fi
+	root="$(bun_root)"
+	tmp="${TMPDIR:-$HOME}/omp-bun.$$"
+	mkdir -p "$tmp" "$root/bin" || return 1
+	curl -fsSL -o "$tmp/bun.zip" https://github.com/oven-sh/bun/releases/latest/download/bun-linux-aarch64-android.zip || { rm -rf "$tmp"; return 1; }
+	unzip -oq "$tmp/bun.zip" -d "$tmp" || { rm -rf "$tmp"; return 1; }
+	cp -f "$tmp"/bun-linux-aarch64-android/bun "$root/bin/bun" || { rm -rf "$tmp"; return 1; }
+	chmod +x "$root/bin/bun"
+	rm -rf "$tmp"
+	PATH="$root/bin:$PATH"
+	export PATH
+	[ -n "$(bun_path)" ]
+}
+
 fetch_release() { # $1 = pi-natives version; puts the addon in RELEASE_ADDON, dies when the release is missing
 	local version="$1" base f
 	base="${OMP_TERMUX_RELEASE_BASE:-https://github.com/$REPO/releases/download/omp-$version}"
@@ -353,12 +398,17 @@ device_install() { # $1 = version, "latest", or a path to a .node; no argument =
 	case "$arg" in
 		"")
 			want="${OMP_TERMUX_VERSION:-$(installed_version)}"
-			[ -n "$want" ] || die "no @oh-my-pi/pi-natives on this device — install omp first: bun install -g @oh-my-pi/pi-coding-agent"
+			if [ -z "$want" ]; then
+				# Nothing installed yet: take the newest version this repository has a release for, so the
+				# matching addon is guaranteed to exist, and install that omp below.
+				want="$(latest_release_version)"
+				[ -n "$want" ] || die "no omp on this device and no release to install; pass a version: omp-termux install <version>"
+				msg "no omp on this device yet — installing $want"
+			fi
 			;;
 		latest)
-			want="$(latest_version)"
-			[ -n "$want" ] || die "cannot resolve the latest upstream release; pass one: omp-termux install <version>"
-			msg "latest upstream release: $want"
+			resolve_latest
+			want="$LATEST"
 			;;
 		*)
 			if [ -f "$arg" ]; then
@@ -370,6 +420,7 @@ device_install() { # $1 = version, "latest", or a path to a .node; no argument =
 			;;
 	esac
 	# Fetch before moving omp: an upgrade without the matching addon in hand leaves omp unable to start.
+	device_ensure_bun || die "cannot install bun; install it by hand: pkg install bun"
 	fetch_release "$want"
 	current="$(installed_version)"
 	if [ "$current" != "$want" ]; then
@@ -403,7 +454,7 @@ console.log("  NATIVE LOAD OK")
 EOF
 	while IFS= read -r d; do
 		msg "loading through the loader: $d"
-		[ -n "$bun_bin" ] || { warn "bun not found (looked for 'bun' on PATH and $HOME/.bun/bin/bun); cannot load-test $d"; rc=1; continue; }
+		[ -n "$bun_bin" ] || { warn "bun not found (looked for 'bun' on PATH and under $(bun_root)); cannot load-test $d"; rc=1; continue; }
 		"$bun_bin" "$probe" "$d/native/index.js" || { warn "load failed: $d"; rc=1; }
 	done < <(natives_dirs)
 	rm -f "$probe"
@@ -495,7 +546,7 @@ install_build_deps() {
 
 # --- build: on the device (native) -------------------------------------------------------------------
 
-device_build() {
+device_build() { # $1 = version (default: the one installed on this device)
 	local version="${1:-$(installed_version)}" ref src_version
 	version="${version#v}"
 	[ -n "$version" ] || die "no installed @oh-my-pi/pi-natives; install omp first: bun install -g @oh-my-pi/pi-coding-agent"
@@ -704,7 +755,7 @@ ensure_device_bun() {
 	msg "pkg install did not provide bun; fetching the Android build"
 	device_ssh 'tmp="${TMPDIR:-$HOME}/omp-bun.$$"; dir=$('"$(remote_bun_root)"'); mkdir -p "$tmp" "$dir/bin" && curl -fsSL -o "$tmp/bun.zip" https://github.com/oven-sh/bun/releases/latest/download/bun-linux-aarch64-android.zip && unzip -oq "$tmp/bun.zip" -d "$tmp" && cp -f "$tmp"/bun-linux-aarch64-android/bun "$dir/bin/bun" && chmod +x "$dir/bin/bun"; rc=$?; rm -rf "$tmp"; exit $rc' ||
 		die "could not install bun on the device"
-		msg "bun installed next to bun's own root ($(bun_root)/bin/bun)"
+	msg "bun installed on the device"
 }
 
 ensure_device_version() { # $1 = target version; installs omp on the device when it differs
@@ -755,9 +806,8 @@ resolve_target() {
 	elif [ -n "$arg" ]; then
 		TARGET_VERSION="${arg#v}"
 		if [ "$TARGET_VERSION" = latest ]; then
-			TARGET_VERSION="$(latest_version)"
-			[ -n "$TARGET_VERSION" ] || die "cannot resolve the upstream release; pass one: omp-termux install <version>"
-			msg "latest upstream release: $TARGET_VERSION"
+			resolve_latest
+			TARGET_VERSION="$LATEST"
 		fi
 	else
 		TARGET_VERSION="$(device_installed_version)"
@@ -779,7 +829,7 @@ install_on_device() {
 	device_run verify || die "verification failed on the device"
 }
 
-workstation_install() {
+workstation_install() { # $1 = version, "latest", or a path to a .node (default: what the device runs)
 	resolve_target "${1:-}"
 	if [ -n "$TARGET_VERSION" ]; then
 		ensure_device_version "$TARGET_VERSION"
@@ -866,16 +916,18 @@ cmd_device() { # $1 = user@host to save; no argument shows the current target
 }
 
 device_doctor() {
+	local bun_bin
+	bun_bin="$(bun_path)"
 	msg "environment check (device)"
 	printf '  Termux         : %s\n' "${TERMUX_VERSION:-not detected}"
 	printf '  uname          : %s %s\n' "$(uname -s)" "$(uname -m)"
 	printf '  tool           : %s\n' "$SELF"
-	printf '  bun            : %s\n' "$(have bun && bun --version || echo MISSING)"
+	printf '  bun            : %s\n' "${bun_bin:-MISSING}"
 	printf '  rustc / cargo  : %s / %s\n' "$(have rustc && rustc -vV | sed -n 's/^release: /release=/p' || echo 'MISSING (only needed for omp-termux build)')" "$(have cargo && cargo --version || echo MISSING)"
 	printf '  omp binary     : %s\n' "$(command -v omp 2>/dev/null || echo 'not found on PATH')"
 	printf '  pi-natives     : %s\n' "$(installed_version || echo 'not found')"
 	printf '  free space     : %s\n' "$(df -h "$HOME" 2>/dev/null | awk 'NR==2{print $4}')"
-	have bun || warn "bun is missing: pkg install bun (or curl -fsSL https://bun.sh/install | bash)"
+	[ -n "$bun_bin" ] || warn "bun is missing: pkg install bun (or curl -fsSL https://bun.sh/install | bash)"
 }
 
 workstation_doctor() {
@@ -906,12 +958,12 @@ case "${1:-help}" in
 	verify) if [ "$MODE" = device ]; then run_verify; else device_run verify; fi ;;
 	install)
 		shift
-		case "${1:-}" in -*) die "unexpected option: $1 (run 'omp-termux help')" ;; esac
+		reject_option "${1:-}"
 		if [ "$MODE" = device ]; then device_install "${1:-}"; else workstation_install "${1:-}"; fi
 		;;
 	build)
 		shift
-		case "${1:-}" in -*) die "unexpected option: $1 (run 'omp-termux help')" ;; esac
+		reject_option "${1:-}"
 		if [ "$MODE" = device ]; then device_build "${1:-}"; else workstation_build "${1:-}"; fi
 		;;
 	device) shift; cmd_device "${1:-}" ;;

@@ -2,17 +2,19 @@
 # Fetches omp-termux and lets it install the addon matching the omp on this device.
 set -eu
 
-REPO="${OMP_TERMUX_REPO:-hmeqo/omp-termux}"
+REPO="${OMP_TERMUX_REPO:-hmeqo/omp-termux}"                 # must match bin/omp-termux
 raw="${OMP_TERMUX_RAW_BASE:-https://raw.githubusercontent.com/$REPO/main}"
-work="${TMPDIR:-$HOME}/omp-termux-install.$$"
+work="${TMPDIR:-$HOME}/omp-termux-install.$$"               # ours alone; removed on exit
 
+die() { echo "install: $*" >&2; exit 1; }
+
+# Prerequisites first: nothing is fetched or created before we know we can run the tool.
+command -v bash >/dev/null 2>&1 || die "bash is required; run: pkg install bash"
 mkdir -p "$work/bin"
 trap 'rm -rf "$work"' EXIT
 
 echo "==> fetching omp-termux"
-curl -fsSL "$raw/bin/omp-termux" -o "$work/bin/omp-termux" ||
-	{ echo "install: cannot fetch $raw/bin/omp-termux" >&2; exit 1; }
-command -v bash >/dev/null 2>&1 || { echo "install: bash is required; run: pkg install bash" >&2; exit 1; }
-bash -n "$work/bin/omp-termux" || { echo "install: the downloaded omp-termux is not valid shell" >&2; exit 1; }
+curl -fsSL "$raw/bin/omp-termux" -o "$work/bin/omp-termux" || die "cannot fetch $raw/bin/omp-termux"
+bash -n "$work/bin/omp-termux" || die "the downloaded omp-termux is not valid shell"
 
 OMP_TERMUX_MODE=device bash "$work/bin/omp-termux" install

@@ -10,7 +10,7 @@
 
 ### 预编译
 
-需要设备上已装好 Termux、`bun` 和 omp(`bun install -g @oh-my-pi/pi-coding-agent`)。
+需要设备上有 `curl`:如果缺 `bun` 或 omp,脚本会先把它们装上。
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/hmeqo/omp-termux/main/install.sh | sh
@@ -43,8 +43,7 @@ omp-termux install latest       # 以后:升级设备上的 omp,并安装匹配�
 `ANDROID_NDK_ROOT`、`ANDROID_NDK_HOME`,或用 SDK 里最新的 `ndk/*`)、`cmake`、`ninja`、`git`、`curl`、
 `unzip`、`ssh`。缺哪个,`omp-termux doctor` 会指出来。
 
-设备:Android 7+(API 24)、aarch64,并开启 `sshd`(`pkg install openssh`)。
-bun 与 omp 由 `omp-termux install` 自动安装。
+设备:Android 7+(API 24)、aarch64,并开启 `sshd`(`pkg install openssh`)。缺 `bun` 或 omp 时会自动安装。
 
 ## 命令
 

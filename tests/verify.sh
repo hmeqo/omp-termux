@@ -32,6 +32,12 @@ if [ ! -f "$R/out/pi_natives.android-arm64.node" ]; then
 	exit $fail
 fi
 
+REAL_CURL="$(command -v curl || true)"
+REAL_SH="$(command -v sh || true)"
+[ -n "$REAL_SH" ] || { echo "verify: sh is required" >&2; exit 1; }
+[ -n "$REAL_CURL" ] || { echo "verify: curl is required" >&2; exit 1; }
+REAL_BUN="$(command -v bun || true)"
+
 echo "== 设备侧冒烟(隔离 HOME + TERMUX_VERSION,假 curl/bun)"
 T=/tmp/vdev; FB=/tmp/vbin; RAW=/tmp/vraw; R19=/tmp/vrel19; R20=/tmp/vrel20; LOG=/tmp/v-bun.log
 for d in "$T" "$FB" "$RAW" "$R19" "$R20"; do
@@ -49,7 +55,7 @@ assert b.count(b"__piNativesV18_1_19") == 1
 pathlib.Path("$R20/pi_natives.android-arm64.node").write_bytes(b.replace(b"__piNativesV18_1_19", b"__piNativesV18_1_20"))
 PY
 cp "$R/bin/omp-termux" "$RAW/bin/omp-termux"
-printf '#!/bin/sh\ncase "$*" in *api.github.com*) echo "{\\"tag_name\\": \\"v18.1.20\\"}"; exit 0;; esac\nexec /usr/bin/curl "$@"\n' >"$FB/curl"
+printf '#!/bin/sh\ncase "$*" in *api.github.com*) echo "{\\"tag_name\\": \\"v18.1.20\\"}"; exit 0;; esac\nexec %s "$@"\n' "$REAL_CURL" >"$FB/curl"
 cat >"$FB/bun" <<EOS
 #!/bin/sh
 echo "bun \$*" >>"$LOG"
@@ -72,6 +78,12 @@ chk "软链落在 \$PREFIX/bin" "$(readlink "$T/usr/bin/omp-termux")" "$T/.local
 chk "引导临时目录已清" "$(ls -A "$T/tmp" | wc -l)" "0"
 chk "引导未动 omp" "$(grep -c 'install -g' "$LOG" 2>/dev/null || true)" "0"
 
+# install.sh checks its prerequisites before fetching anything, so a PATH without bash must fail on that
+# (and never get as far as curl).
+PATH="$FB" "$REAL_SH" "$R/install.sh" >/tmp/v7.log 2>&1
+chk "引导:缺 bash 时 exit!=0" "$(nonzero $?)" "non0"
+grep -q 'install: bash is required' /tmp/v7.log && ok "引导:提示缺 bash" || no "引导:未提示缺 bash"
+
 dev() { HOME=$T TMPDIR=$T/tmp PREFIX=$T/usr XDG_CONFIG_HOME=$T/.config TERMUX_VERSION=0.118 PATH="$FB:$PATH" \
 	OMP_TERMUX_RAW_BASE="file://$RAW" OMP_TERMUX_RELEASE_BASE="$1" "$TOOL" ${2:-install} "${3:-}"; }
 
@@ -92,6 +104,7 @@ grep -q 'updated [0-9a-f]\{12\} -> [0-9a-f]\{12\}' /tmp/v5.log && ok "打印新�
 printf 'if then fi((\n' >"$RAW/bin/omp-termux"
 keep=$(sha256sum "$T/.local/opt/omp-termux/bin/omp-termux" | cut -c1-12)
 dev "file://$R19" update-self >/tmp/v6.log 2>&1; chk "坏脚本 exit!=0" "$(nonzero $?)" "non0"
+cp "$R/bin/omp-termux" "$RAW/bin/omp-termux"   # restore: later sections fetch the tool from here
 chk "坏脚本时旧副本完好" "$(sha256sum "$T/.local/opt/omp-termux/bin/omp-termux" | cut -c1-12)" "$keep"
 chk "无 .new 残留" "$(ls "$T/.local/opt/omp-termux/bin" | tr '\n' ' ')" "omp-termux "
 chk "设备无计划外文件" "$(find "$T" -type f -not -path '*/.config/*' -not -path '*/.bun/*' -not -path '*/.local/*' 2>/dev/null | tr '\n' ' ')" ""
@@ -132,7 +145,7 @@ python3 -c "
 import pathlib
 b = pathlib.Path('$R/out/pi_natives.android-arm64.node').read_bytes()
 pathlib.Path('$RX/pi_natives.android-arm64.node').write_bytes(b.replace(b'__piNativesV18_1_19', b'__piNativesV18_1_21'))"
-cp "$FB/curl" "$FX/curl" 2>/dev/null || printf '#!/bin/sh\ncase "$*" in *api.github.com*) echo "{\"tag_name\": \"v18.1.21\"}"; exit 0;; esac\nexec /usr/bin/curl "$@"\n' >"$FX/curl"
+cp "$FB/curl" "$FX/curl" 2>/dev/null || printf '#!/bin/sh\ncase "$*" in *api.github.com*) echo "{\"tag_name\": \"v18.1.21\"}"; exit 0;; esac\nexec %s "$@"\n' "$REAL_CURL" >"$FX/curl"
 printf '#!/bin/sh\nexit 0\n' >"$FX/bun"
 chmod +x "$FX/curl" "$FX/bun"
 HOME=$TX XDG_CACHE_HOME="$TX/.cache" TMPDIR=$TX/tmp PREFIX=$TX/usr XDG_CONFIG_HOME=$TX/.config TERMUX_VERSION=0.118 \
@@ -151,7 +164,85 @@ HOME=$TX BUN_INSTALL="$BI" XDG_CACHE_HOME="$TX/.cache" TMPDIR=$TX/tmp PREFIX=$TX
 [ -f "$BI/install/cache/@oh-my-pi/pi-natives@18.1.21@@@1/native/pi_natives.android-arm64.node" ] &&
 	ok "BUN_INSTALL 根里的包装上了插件" || no "BUN_INSTALL 根没装上插件"
 
-rm -rf "$T" "$FB" "$RAW" "$R19" "$R20" "$LOG" "$TW" "$FSW" "$TX" "$FX" "$RX" /tmp/verify-xdg.log /tmp/verify-bi.log
+echo "== 全新设备:curl 引导(缺 bun、缺 omp)"
+TF=/tmp/verify-fresh; FF=/tmp/verify-fbin; RF=/tmp/verify-frel; FW=/tmp/verify-fraw
+rm -rf "$TF" "$FF" "$RF" "$FW"
+case "$TF$FF$RF$FW" in /tmp/*) ;; *) echo "verify: refusing to touch $TF" >&2; exit 1 ;; esac
+mkdir -p "$TF" "$FF" "$RF" "$FW/bin" "$TF/usr/bin" "$TF/tmp" "$TF/.config"
+cp "$R/bin/omp-termux" "$FW/bin/omp-termux"
+python3 -c "
+import pathlib
+b = pathlib.Path('$R/out/pi_natives.android-arm64.node').read_bytes()
+pathlib.Path('$RF/pi_natives.android-arm64.node').write_bytes(b.replace(b'__piNativesV18_1_19', b'__piNativesV18_1_21'))"
+cp "$R/out/desktop-adapter.js" "$RF/"
+{ cat <<'CEOF'
+#!/bin/sh
+case "$*" in
+*api.github.com/repos/*/omp-termux/releases/latest*) echo '{"tag_name": "omp-18.1.21"}'; exit 0 ;;
+*api.github.com*oh-my-pi*) echo '{"tag_name": "v18.1.21"}'; exit 0 ;;
+esac
+CEOF
+printf 'exec %s "$@"\n' "$REAL_CURL"; } >"$FF/curl"
+cat >"$FF/pkg" <<'PEOF'
+#!/bin/sh
+# stand-in for Termux' pkg: drops a fake bun where bun would live
+printf '%s\n' "pkg $* PKGROOT=${PKGROOT:-UNSET}" >>"$PKGLOG"
+case "$1" in
+install)
+	mkdir -p "$PKGROOT/bin"
+	cat >"$PKGROOT/bin/bun" <<'BUNF'
+#!/bin/sh
+echo "bun $*" >>"$BUNLOG"
+if [ "$1" = install ] && [ "$2" = -g ]; then
+	v="${3#@oh-my-pi/pi-coding-agent@}"
+	p="$PKGROOT/install/cache/@oh-my-pi/pi-natives@$v@@@1"
+	mkdir -p "$p/native"
+	echo "{\"name\":\"@oh-my-pi/pi-natives\",\"version\":\"$v\"}" >"$p/package.json"
+fi
+exit 0
+BUNF
+	chmod +x "$PKGROOT/bin/bun"
+	exit 0 ;;
+esac
+exit 0
+PEOF
+chmod +x "$FF/curl" "$FF/pkg"
+: >"$TF/bun.log"; : >"$TF/pkg.log"
+# A system-wide bun would make the tool think bun is already there, so hide it behind a bind mount of /dev/null
+# inside a private mount namespace. Without that privilege the case is skipped.
+FRC=127
+if unshare -rm true 2>/dev/null; then
+	HOME=$TF XDG_CACHE_HOME= TMPDIR=$TF/tmp PREFIX=$TF/usr XDG_CONFIG_HOME=$TF/.config TERMUX_VERSION=0.118 \
+		PATH="$FF:$PATH" PKGROOT="$TF/.bun" BUNLOG="$TF/bun.log" PKGLOG="$TF/pkg.log" OMP_TERMUX_RAW_BASE="file://$FW" \
+		OMP_TERMUX_RELEASE_BASE="file://$RF" \
+		unshare -rm sh -c 'mount --bind /dev/null "$1" 2>/dev/null; exec sh "$2"' _ "${REAL_BUN:-/dev/null}" "$R/install.sh" \
+		>/tmp/verify-fresh.log 2>&1
+	FRC=$?
+else
+	echo "  (skip: unshare -rm unavailable, cannot hide a system-wide bun)"
+fi
+if [ "$FRC" = 127 ]; then
+	:
+elif [ "$FRC" -eq 0 ]; then
+	ok "全新设备:引导 exit=0"
+else
+	no "全新设备:引导失败"
+	tail -4 /tmp/verify-fresh.log | sed 's|^|       |'
+fi
+if [ "$FRC" != 127 ]; then
+grep -q "installing bun" /tmp/verify-fresh.log && ok "全新设备:自行装了 bun" || no "全新设备:没装 bun"
+grep -q "no omp on this device yet" /tmp/verify-fresh.log && ok "全新设备:自行装了 omp(我们最新 release 的版本)" || no "全新设备:没装 omp"
+grep -q "install -g @oh-my-pi/pi-coding-agent@18.1.21" "$TF/bun.log" && ok "全新设备:调用的是正确版本" || no "全新设备:bun 调用不对"
+[ -f "$TF/.bun/install/cache/@oh-my-pi/pi-natives@18.1.21@@@1/native/pi_natives.android-arm64.node" ] &&
+	ok "全新设备:插件装进新装的 omp 里" || no "全新设备:插件没装上"
+[ -f "$TF/.local/opt/omp-termux/bin/omp-termux" ] && ok "全新设备:工具留在设备上" || no "全新设备:工具没留下"
+fi
+
+if [ "$fail" = 0 ]; then
+	rm -rf "$T" "$FB" "$RAW" "$R19" "$R20" "$LOG" "$TW" "$FSW" "$TX" "$FX" "$RX" "$TF" "$FF" "$RF" "$FW" /tmp/verify-xdg.log /tmp/verify-bi.log /tmp/verify-fresh.log
+else
+	echo "  (failed: scene kept under /tmp/verify-*)"
+fi
 echo
 echo "失败项: $fail"
 exit $fail
