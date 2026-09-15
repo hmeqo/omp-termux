@@ -5,14 +5,18 @@
 #   author    : anatoli-tsinovoy
 #   fork pull : https://github.com/anatoli-tsinovoy/oh-my-pi/pull/6
 #   head sha  : dff59821aeb5efaa041095f4bb9c5811c71ce613  (base: main 3b3a6dc9bbd8)
-#   fetched   : 2026-09-13
+#   rebased   : 2026-09-15 onto v18.2.0. Upstream grew its own pidfd-less fallback
+#               (read_live_start_time, Option<pidfd>), so all of the patch's
+#               crates/pi-shell work except the module gate is now upstream's, and
+#               the two CHANGELOG hunks were dropped.
 #
-# 17 files, +348/-78. Summary:
+# 15 files, +280/-50 against v18.2.0. Summary:
 #   crates/pi-natives           arboard + clipboard/desktop modules become
 #                               cfg(not(target_os = "android")) — arboard has no
 #                               Android backend.
-#   crates/pi-shell,            Bionic-compatible process discovery (/proc) and
-#   crates/pi-builtins,         PTY/shell handling.
+#   crates/pi-shell             compiles its Linux process backend on Android too;
+#                               upstream's fallback needs the module to exist.
+#   crates/pi-builtins,         Bionic-compatible process discovery (/proc).
 #   crates/pi-walker
 #   packages/natives/scripts/   scopes RUSTC_BOOTSTRAP to xutf,pi_natives so a
 #     build-bindings.ts         stable rustc (what Termux ships) can build them.
@@ -20,10 +24,9 @@
 #     desktop-adapter.js        entrypoint survives a missing DesktopSession.
 #   packages/coding-agent       Termux clipboard path, bundled-binary launcher.
 #
-# The two CHANGELOG files in the diff are excluded at apply time:
-#   git apply --exclude='*CHANGELOG.md' patches/0001-termux-android-arm64.patch
+# Applied by apply_patch in bin/omp-termux (git apply, CHANGELOG hunks excluded).
 diff --git a/crates/pi-builtins/src/kill.rs b/crates/pi-builtins/src/kill.rs
-index b342a7e2c72..08caffd61d6 100644
+index b342a7e..08caffd 100644
 --- a/crates/pi-builtins/src/kill.rs
 +++ b/crates/pi-builtins/src/kill.rs
 @@ -599,6 +599,17 @@ mod tests {
@@ -65,7 +68,7 @@ index b342a7e2c72..08caffd61d6 100644
  	}
  	match KillSignal::parse(value).ok()? {
 diff --git a/crates/pi-builtins/src/proc_snapshot.rs b/crates/pi-builtins/src/proc_snapshot.rs
-index 43ea86799a9..ed1efd0c0be 100644
+index 43ea867..ed1efd0 100644
 --- a/crates/pi-builtins/src/proc_snapshot.rs
 +++ b/crates/pi-builtins/src/proc_snapshot.rs
 @@ -41,7 +41,7 @@ pub(crate) fn sanitize_process_command(command: String) -> String {
@@ -184,7 +187,7 @@ index 43ea86799a9..ed1efd0c0be 100644
  	/// Walks the parent chain from the current process, taking one process-table
  	/// snapshot.
 diff --git a/crates/pi-builtins/src/ps.rs b/crates/pi-builtins/src/ps.rs
-index e4ee3da0fb4..26a4da67b94 100644
+index e4ee3da..26a4da6 100644
 --- a/crates/pi-builtins/src/ps.rs
 +++ b/crates/pi-builtins/src/ps.rs
 @@ -1244,7 +1244,7 @@ fn format_ps_elapsed(duration: Duration) -> String {
@@ -197,10 +200,10 @@ index e4ee3da0fb4..26a4da67b94 100644
  	let value = fs::read_to_string("/proc/meminfo")
  		.ok()?
 diff --git a/crates/pi-natives/Cargo.toml b/crates/pi-natives/Cargo.toml
-index 6ade9a0023b..c95f6b6ba88 100644
+index 05035b8..8a4ec95 100644
 --- a/crates/pi-natives/Cargo.toml
 +++ b/crates/pi-natives/Cargo.toml
-@@ -24,7 +24,6 @@ wayland-pipewire = ["dep:pipewire"]
+@@ -25,7 +25,6 @@ wayland-pipewire = ["dep:pipewire"]
  [dependencies]
  anyhow.workspace = true
  async-trait.workspace = true
@@ -219,7 +222,7 @@ index 6ade9a0023b..c95f6b6ba88 100644
  libc.workspace = true
  
 diff --git a/crates/pi-natives/src/lib.rs b/crates/pi-natives/src/lib.rs
-index 20f5c23eee4..25eb8dde7e0 100644
+index 9dba519..6ce9061 100644
 --- a/crates/pi-natives/src/lib.rs
 +++ b/crates/pi-natives/src/lib.rs
 @@ -26,8 +26,10 @@ pub mod appearance;
@@ -234,7 +237,7 @@ index 20f5c23eee4..25eb8dde7e0 100644
  pub mod devicecheck;
  pub mod diff;
 diff --git a/crates/pi-shell/src/process.rs b/crates/pi-shell/src/process.rs
-index 253ea8c980a..29e8190d094 100644
+index 9df7205..c27273f 100644
 --- a/crates/pi-shell/src/process.rs
 +++ b/crates/pi-shell/src/process.rs
 @@ -16,7 +16,7 @@ pub use pi_builtins::ProcessStatus;
@@ -246,157 +249,11 @@ index 253ea8c980a..29e8190d094 100644
  mod platform {
  	use std::{
  		collections::HashSet,
-@@ -29,12 +29,15 @@ mod platform {
- 
- 	use super::ProcessStatus;
- 
--	/// Stable Linux process reference backed by a pidfd.
-+	/// Stable Linux/Android process reference. Linux requires a pidfd; Android
-+	/// uses one when available and falls back to `/proc` start-time identity.
-+	/// `start_time` is recorded only for the fallback and is never paired with
-+	/// a pidfd.
- 	#[derive(Clone)]
- 	pub struct Process {
- 		pid:        i32,
--		pidfd:      Arc<OwnedFd>,
--		start_time: u64,
-+		pidfd:      Option<Arc<OwnedFd>>,
-+		start_time: Option<u64>,
- 	}
- 
- 	impl Process {
-@@ -42,8 +45,14 @@ mod platform {
- 			if pid <= 0 {
- 				return None;
- 			}
--			let pidfd = open_pidfd(pid)?;
--			let start_time = read_start_time(pid)?;
-+			let pidfd = open_pidfd(pid);
-+			#[cfg(target_os = "linux")]
-+			let pidfd = Some(pidfd?);
-+			let start_time = if pidfd.is_some() {
-+				None
-+			} else {
-+				Some(read_live_start_time(pid)?)
-+			};
- 			Some(Self { pid, pidfd, start_time })
- 		}
- 
-@@ -155,21 +164,31 @@ mod platform {
- 		}
- 
- 		pub fn kill(&self, signal: i32) -> bool {
--			// SAFETY: `self.pidfd` is an owned file descriptor returned by a successful
--			// `pidfd_open` call and remains open for the duration of this syscall. A null
--			// `siginfo_t` pointer is explicitly accepted by `pidfd_send_signal` and makes
--			// the kernel synthesize the same signal metadata as `kill(2)`. Flags are zero,
--			// which is the documented default behavior.
--			let ret = unsafe {
--				libc::syscall(
--					libc::SYS_pidfd_send_signal,
--					self.pidfd.as_raw_fd(),
--					signal,
--					ptr::null::<libc::siginfo_t>(),
--					0,
--				)
--			};
--			ret == 0
-+			if let Some(pidfd) = &self.pidfd {
-+				// SAFETY: `pidfd` is an owned file descriptor returned by a successful
-+				// `pidfd_open` call and remains open for the duration of this syscall. A
-+				// null `siginfo_t` pointer is explicitly accepted by
-+				// `pidfd_send_signal`. Flags are zero, the documented default behavior.
-+				let ret = unsafe {
-+					libc::syscall(
-+						libc::SYS_pidfd_send_signal,
-+						pidfd.as_raw_fd(),
-+						signal,
-+						ptr::null::<libc::siginfo_t>(),
-+						0,
-+					)
-+				};
-+				return ret == 0;
-+			}
-+
-+			// Android kernels without pidfd support use the recorded `/proc` start time.
-+			// `live_identity` revalidates it immediately before the raw signal.
-+			if !self.live_identity() {
-+				return false;
-+			}
-+			// SAFETY: `kill` takes integer identifiers by value and does not access
-+			// caller-owned memory.
-+			unsafe { libc::kill(self.pid, signal) == 0 }
- 		}
- 
- 		pub fn group_id(&self) -> Option<i32> {
-@@ -177,17 +196,28 @@ mod platform {
- 				return None;
- 			}
- 
--			// SAFETY: `self.pid` names the process currently referenced by `self.pidfd`
--			// unless it exits concurrently. If it exits, `getpgid` reports failure rather
--			// than dereferencing caller-owned memory.
-+			// SAFETY: `status` just confirmed that `self.pid` still has the recorded
-+			// identity. If it exits concurrently, `getpgid` reports failure rather than
-+			// dereferencing caller-owned memory.
- 			let pgid = unsafe { libc::getpgid(self.pid) };
- 			if pgid > 0 { Some(pgid) } else { None }
- 		}
- 
- 		pub fn status(&self) -> ProcessStatus {
-+			let Some(pidfd) = &self.pidfd else {
-+				let Some(start_time) = self.start_time else {
-+					return ProcessStatus::Exited;
-+				};
-+				return if read_live_start_time(self.pid) == Some(start_time) {
-+					ProcessStatus::Running
-+				} else {
-+					ProcessStatus::Exited
-+				};
-+			};
-+
- 			loop {
- 				let mut pollfd =
--					libc::pollfd { fd: self.pidfd.as_raw_fd(), events: libc::POLLIN, revents: 0 };
-+					libc::pollfd { fd: pidfd.as_raw_fd(), events: libc::POLLIN, revents: 0 };
- 				// SAFETY: `pollfd` points to one initialized `pollfd` element, and the pidfd
- 				// remains open for the duration of the call. Timeout zero makes this a
- 				// non-blocking readiness probe.
-@@ -235,7 +265,6 @@ mod platform {
- 
- 		fn live_identity(&self) -> bool {
- 			self.status() == ProcessStatus::Running
--				&& read_start_time(self.pid) == Some(self.start_time)
- 		}
- 	}
- 
-@@ -257,15 +286,18 @@ mod platform {
- 		})
- 	}
- 
--	fn read_start_time(pid: i32) -> Option<u64> {
-+	fn read_live_start_time(pid: i32) -> Option<u64> {
- 		// `/proc/[pid]/stat` field 22 is the process start time in clock ticks since
- 		// boot. The comm field (between parens) may itself contain spaces and parens,
- 		// so locate the *last* `)` and split the trailing whitespace-separated fields.
- 		let stat_path = format!("/proc/{pid}/stat");
- 		let content = fs::read_to_string(stat_path).ok()?;
- 		let last_paren = content.rfind(')')?;
--		let rest = &content[last_paren + 1..];
--		rest.split_whitespace().nth(19)?.parse().ok()
-+		let mut fields = content[last_paren + 1..].split_whitespace();
-+		if fields.next()? == "Z" {
-+			return None;
-+		}
-+		fields.nth(18)?.parse().ok()
- 	}
- 
- 	fn open_pidfd(pid: i32) -> Option<Arc<OwnedFd>> {
 diff --git a/crates/pi-walker/src/lib.rs b/crates/pi-walker/src/lib.rs
-index 75d1bff43f1..c6d7d91d118 100644
+index 2d06281..69d5a03 100644
 --- a/crates/pi-walker/src/lib.rs
 +++ b/crates/pi-walker/src/lib.rs
-@@ -3385,6 +3385,7 @@ fn push_relative_name(relative: &mut String, name: &str) {
+@@ -3386,6 +3386,7 @@ fn push_relative_name(relative: &mut String, name: &str) {
  	relative.push_str(name);
  }
  
@@ -404,24 +261,8 @@ index 75d1bff43f1..c6d7d91d118 100644
  fn mtime_millis(seconds: i64, nanos: i64) -> Option<f64> {
  	if seconds < 0 {
  		return None;
-diff --git a/packages/coding-agent/CHANGELOG.md b/packages/coding-agent/CHANGELOG.md
-index 2b177bf704b..27f67bd750d 100644
---- a/packages/coding-agent/CHANGELOG.md
-+++ b/packages/coding-agent/CHANGELOG.md
-@@ -2,6 +2,11 @@
- 
- ## [Unreleased]
- 
-+### Fixed
-+
-+- Fixed failed Termux clipboard copies falling through to a synchronous native helper that could freeze the TUI.
-+- Android/Termux builds now produce a runnable bundled launcher instead of a Bun-compiled executable that crashes on startup.
-+
- ## [18.1.16] - 2026-09-09
- 
- ### Added
 diff --git a/packages/coding-agent/scripts/build-binary.ts b/packages/coding-agent/scripts/build-binary.ts
-index 5f2a00a65ec..83d8b0c88f0 100644
+index 5f2a00a..83d8b0c 100644
 --- a/packages/coding-agent/scripts/build-binary.ts
 +++ b/packages/coding-agent/scripts/build-binary.ts
 @@ -1,5 +1,6 @@
@@ -489,7 +330,7 @@ index 5f2a00a65ec..83d8b0c88f0 100644
  		} finally {
  			await runCommand(["bun", "--cwd=../natives", "run", "gen:native:reset"]);
 diff --git a/packages/coding-agent/scripts/omp b/packages/coding-agent/scripts/omp
-index 82721c719d2..4780f90ac7c 100755
+index 82721c7..4780f90 100755
 --- a/packages/coding-agent/scripts/omp
 +++ b/packages/coding-agent/scripts/omp
 @@ -1,12 +1,13 @@
@@ -570,7 +411,7 @@ index 82721c719d2..4780f90ac7c 100755
  fi
  run_bun --preload "$preload" "$cli" "$@"
 diff --git a/packages/coding-agent/src/utils/clipboard.ts b/packages/coding-agent/src/utils/clipboard.ts
-index 9792447c5ba..3df2ecf3baf 100644
+index 9792447..3df2ecf 100644
 --- a/packages/coding-agent/src/utils/clipboard.ts
 +++ b/packages/coding-agent/src/utils/clipboard.ts
 @@ -91,7 +91,7 @@ export async function readMacFileUrlsFromClipboard(): Promise<string[]> {
@@ -598,7 +439,7 @@ index 9792447c5ba..3df2ecf3baf 100644
  
  		await nativeCopyToClipboard(text);
 diff --git a/packages/coding-agent/test/utils/clipboard.test.ts b/packages/coding-agent/test/utils/clipboard.test.ts
-index 55909c6520c..2daba1eccf6 100644
+index 55909c6..2daba1e 100644
 --- a/packages/coding-agent/test/utils/clipboard.test.ts
 +++ b/packages/coding-agent/test/utils/clipboard.test.ts
 @@ -1,5 +1,6 @@
@@ -631,22 +472,8 @@ index 55909c6520c..2daba1eccf6 100644
  describe("readImageFromClipboard on WSL", () => {
  	it("decodes the PowerShell base64 payload without touching the native bridge", async () => {
  		setPlatform("linux");
-diff --git a/packages/natives/CHANGELOG.md b/packages/natives/CHANGELOG.md
-index 7690cc65452..98da0d27d6d 100644
---- a/packages/natives/CHANGELOG.md
-+++ b/packages/natives/CHANGELOG.md
-@@ -1,6 +1,9 @@
- # Changelog
- 
- ## [Unreleased]
-+### Added
-+
-+- Added source-built Android ARM64/Termux support for local native addon builds and Bionic process management; clipboard integration remains Termux API based.
- 
- ## [18.1.15] - 2026-09-08
- 
 diff --git a/packages/natives/native/desktop-adapter.d.ts b/packages/natives/native/desktop-adapter.d.ts
-index 17d44f82de5..b7868a56aeb 100644
+index 17d44f8..b7868a5 100644
 --- a/packages/natives/native/desktop-adapter.d.ts
 +++ b/packages/natives/native/desktop-adapter.d.ts
 @@ -25,4 +25,6 @@ interface AdaptedDesktopSessionConstructor {
@@ -657,7 +484,7 @@ index 17d44f82de5..b7868a56aeb 100644
 +export function adaptDesktopSession(NativeDesktopSession: null): null;
  export function adaptDesktopSession(NativeDesktopSession: unknown): AdaptedDesktopSessionConstructor;
 diff --git a/packages/natives/native/desktop-adapter.js b/packages/natives/native/desktop-adapter.js
-index 8b1402f052b..df9d8bdc659 100644
+index 8b1402f..df9d8bd 100644
 --- a/packages/natives/native/desktop-adapter.js
 +++ b/packages/natives/native/desktop-adapter.js
 @@ -94,6 +94,7 @@ function frameSignature(capture) {
@@ -669,7 +496,7 @@ index 8b1402f052b..df9d8bdc659 100644
  	const cached = ADAPTED_SESSION_CLASSES.get(NativeDesktopSession);
  	if (cached) return cached;
 diff --git a/packages/natives/scripts/build-bindings.ts b/packages/natives/scripts/build-bindings.ts
-index 163363aa337..f22557bb163 100644
+index 1073a6b..74ea36c 100644
 --- a/packages/natives/scripts/build-bindings.ts
 +++ b/packages/natives/scripts/build-bindings.ts
 @@ -21,6 +21,12 @@ import { generateEnumExports } from "./gen-enums";
@@ -683,7 +510,7 @@ index 163363aa337..f22557bb163 100644
 +}
 +
  // Windows: cc-rs and rustc auto-locate cl.exe/link.exe through the VS
- // registry, but the cmake crate (audiopus_sys' bundled opus) needs cmake —
+ // registry, but the cmake crate (opusic-sys' bundled Opus) needs cmake —
  // and its Ninja generator needs ninja — on PATH. VS Build Tools ships both
 @@ -58,6 +64,57 @@ const repoRoot = path.join(import.meta.dir, "../../..");
  const rustDir = path.join(repoRoot, "crates/pi-natives");
@@ -757,7 +584,7 @@ index 163363aa337..f22557bb163 100644
  		const message = err instanceof Error ? err.message : String(err);
  		throw new Error(`Failed to install generated index.d.ts: ${message}`);
 diff --git a/packages/natives/test/desktop-adapter.test.ts b/packages/natives/test/desktop-adapter.test.ts
-index 9cdd7429398..e48c97c2323 100644
+index 9cdd742..e48c97c 100644
 --- a/packages/natives/test/desktop-adapter.test.ts
 +++ b/packages/natives/test/desktop-adapter.test.ts
 @@ -1,4 +1,7 @@

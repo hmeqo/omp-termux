@@ -40,7 +40,7 @@ One bash script is the product; every other file supports it.
 |---|---|
 | `bin/omp-termux` | The entire tool (bash, hard tabs, ~820 lines). |
 | `install.sh` | Device bootstrap: fetch raw `bin/omp-termux`, `bash -n` it, run device `install`. |
-| `patches/` | Vendored upstream PR #6350 patch: hand-written attribution header, then 16 diffs over 17 files. |
+|`patches/`|Vendored upstream PR #6350 patch: hand-written attribution header, then 14 diffs over 14 files, rebased onto v18.2.0 (upstream's own pidfd fallback replaced the `crates/pi-shell` hunks).|
 | `.github/workflows/build.yml` | The only CI: cross-compile and publish one release per omp version. |
 | `docs/` | `README.zh-CN.md` (translation of `README.md`), `font.md` / `font.zh-CN.md` (Nerd Font notes). |
 | `work/`, `out/` | Gitignored: upstream clone + cargo target + opus prefix + napi-cli; built artifacts. |
