@@ -38,9 +38,8 @@ REAL_SH="$(command -v sh || true)"
 [ -n "$REAL_CURL" ] || { echo "verify: curl is required" >&2; exit 1; }
 REAL_BUN="$(command -v bun || true)"
 
-# The fixtures follow the artifact in out/: the addon's sentinel must equal the package version it is
-# installed into, and the "newer" fixtures must sort above it. The bumped versions keep the digit count
-# of the sentinel so it can be rewritten in place.
+# The fixtures follow the artifact in out/: its sentinel must equal the package version it is installed
+# into, and the bumped versions keep the digit count so the sentinel can be rewritten in place.
 V0="$(grep -ao '__piNativesV[0-9A-Za-z_]*' "$R/out/pi_natives.android-arm64.node" | head -1 | sed 's/^__piNativesV//; s/_/./g')"
 [ -n "$V0" ] || { echo "verify: no version sentinel in out/pi_natives.android-arm64.node" >&2; exit 1; }
 bump_version() { # $1 = version, $2 = how many releases ahead of it
@@ -88,17 +87,17 @@ cp "$R/bin/omp-termux" "$RAW/bin/omp-termux"
 fake_curl "$FB/curl" "$V1" "$V1"
 cat >"$FB/bun" <<EOS
 #!/bin/sh
-echo "bun \$*" >>"$LOG"
+echo "bun \$* BUN_INSTALL=\${BUN_INSTALL:-unset}" >>"$LOG"
 if [ "\$1" = install ] && [ "\$2" = -g ]; then
 	v="\${3#@oh-my-pi/pi-coding-agent@}"
-	p="$T/.bun/install/cache/@oh-my-pi/pi-natives@\$v@@@1"
+	p="\${BUN_INSTALL:-$T/.bun}/install/cache/@oh-my-pi/pi-natives@\$v@@@1"
 	mkdir -p "\$p/native"
 	echo "{\\"name\\":\\"@oh-my-pi/pi-natives\\",\\"version\\":\\"\$v\\"}" >"\$p/package.json"
 fi
 exit 0
 EOS
 chmod +x "$FB"/*
-HOME=$T TMPDIR=$T/tmp PREFIX=$T/usr XDG_CONFIG_HOME=$T/.config TERMUX_VERSION=0.118 PATH="$FB:$PATH" \
+HOME=$T TMPDIR=$T/tmp PREFIX=$T/usr XDG_CONFIG_HOME=$T/.config XDG_CACHE_HOME=$T/.cache TERMUX_VERSION=0.118 PATH="$FB:$PATH" \
 	OMP_TERMUX_RAW_BASE="file://$RAW" OMP_TERMUX_RELEASE_BASE="file://$R19" sh "$R/install.sh" >/tmp/v1.log 2>&1
 chk "引导 install.sh exit=0" "$?" "0"
 P="$T/.bun/install/cache/@oh-my-pi/pi-natives@$V0@@@1"; TOOL="$T/usr/bin/omp-termux"
@@ -114,7 +113,7 @@ PATH="$FB" "$REAL_SH" "$R/install.sh" >/tmp/v7.log 2>&1
 chk "引导:缺 bash 时 exit!=0" "$(nonzero $?)" "non0"
 grep -q 'install: bash is required' /tmp/v7.log && ok "引导:提示缺 bash" || no "引导:未提示缺 bash"
 
-dev() { HOME=$T TMPDIR=$T/tmp PREFIX=$T/usr XDG_CONFIG_HOME=$T/.config TERMUX_VERSION=0.118 PATH="$FB:$PATH" \
+dev() { HOME=$T TMPDIR=$T/tmp PREFIX=$T/usr XDG_CONFIG_HOME=$T/.config XDG_CACHE_HOME=$T/.cache TERMUX_VERSION=0.118 PATH="$FB:$PATH" \
 	OMP_TERMUX_RAW_BASE="file://$RAW" OMP_TERMUX_RELEASE_BASE="$1" "$TOOL" ${2:-install} "${3:-}"; }
 
 : >"$LOG"; dev "file://$R19" install >/tmp/v2.log 2>&1; chk "install(无参) exit=0" "$?" "0"
@@ -136,8 +135,23 @@ keep=$(sha256sum "$T/.local/opt/omp-termux/bin/omp-termux" | cut -c1-12)
 dev "file://$R19" update-self >/tmp/v6.log 2>&1; chk "坏脚本 exit!=0" "$(nonzero $?)" "non0"
 cp "$R/bin/omp-termux" "$RAW/bin/omp-termux"   # restore: later sections fetch the tool from here
 chk "坏脚本时旧副本完好" "$(sha256sum "$T/.local/opt/omp-termux/bin/omp-termux" | cut -c1-12)" "$keep"
+
+echo
+echo "== 两个 bun 根:装在 omp 所在的那个(工具所在的 shell 既无 XDG 也无 bun bin)"
+# The legacy root carries a newer addon but no omp: picking by rule order upgrades the root nobody runs.
+mkdir -p "$T/.cache/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent" \
+	"$T/.cache/.bun/install/global/node_modules/@oh-my-pi/pi-natives/native"
+pkg_json "$V0" >"$T/.cache/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/package.json"
+pkg_json "$V0" >"$T/.cache/.bun/install/global/node_modules/@oh-my-pi/pi-natives/package.json"
+cp "$R/out/pi_natives.android-arm64.node" "$T/.cache/.bun/install/global/node_modules/@oh-my-pi/pi-natives/native/"
+: >"$LOG"
+dev "file://$R20" install latest >/tmp/vroots.log 2>&1
+chk "两个根:升级 exit=0" "$?" "0"
+grep -q "installing omp $V1 on this device" /tmp/vroots.log && ok "两个根:按证据选了装着 omp 的根" || no "两个根:选错了根"
+chk "两个根:根被钉住(BUN_INSTALL)" "$(grep -o "BUN_INSTALL=$T/.cache/.bun\$" "$LOG" | head -1)" "BUN_INSTALL=$T/.cache/.bun"
+chk "两个根:新包落在该根" "$(ls "$T/.cache/.bun/install/cache/@oh-my-pi/pi-natives@$V1@@@1/native" 2>/dev/null | tr '\n' ' ')" "desktop-adapter.js pi_natives.android-arm64.node "
 chk "无 .new 残留" "$(ls "$T/.local/opt/omp-termux/bin" | tr '\n' ' ')" "omp-termux "
-chk "设备无计划外文件" "$(find "$T" -type f -not -path '*/.config/*' -not -path '*/.bun/*' -not -path '*/.local/*' 2>/dev/null | tr '\n' ' ')" ""
+chk "设备无计划外文件" "$(find "$T" -type f -not -path '*/.config/*' -not -path '*/.bun/*' -not -path '*/.cache/*' -not -path '*/.local/*' 2>/dev/null | tr '\n' ' ')" ""
 
 echo "== 工作站侧冒烟(假 ssh/scp 当设备)"
 TW=/tmp/vws; FSW=/tmp/vwsbin
@@ -149,7 +163,7 @@ printf '#!/bin/sh\nfor a in "$@"; do cmd="$a"; done\nHOME="%s" PATH="%s:$PATH" s
 printf '#!/bin/sh\nfor a in "$@"; do [ -f "$a" ] && { mkdir -p "%s/.cache/omp-termux"; cp -f "$a" "%s/.cache/omp-termux/"; }; done\nexit 0\n' "$TW" "$TW" >"$FSW/scp"
 printf '#!/bin/sh\nexit 0\n' >"$FSW/bun"
 chmod +x "$FSW"/*
-ws() { HOME=$TW XDG_CONFIG_HOME=$TW/.config OMP_TERMUX_HOST=user@device PATH="$FSW:$PATH" bash "$R/bin/omp-termux" "$@" >/tmp/vws.log 2>&1; }
+ws() { HOME=$TW XDG_CONFIG_HOME=$TW/.config XDG_CACHE_HOME=$TW/.cache OMP_TERMUX_HOST=user@device PATH="$FSW:$PATH" bash "$R/bin/omp-termux" "$@" >/tmp/vws.log 2>&1; }
 for v in help doctor status verify; do ws "$v" && ok "工作站 $v exit=0" || no "工作站 $v 失败"; done
 ws install $V0 && ok "工作站 install $V0 exit=0" || { no "工作站 install 失败"; tail -3 /tmp/vws.log | sed 's|^|       |'; }
 chk "工作站安装后设备侧插件就位" "$(ls "$TW/.bun/install/cache/@oh-my-pi/pi-natives@$V0@@@1/native" | tr '\n' ' ')" "desktop-adapter.js pi_natives.android-arm64.node "
