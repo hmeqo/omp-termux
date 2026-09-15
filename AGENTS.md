@@ -40,7 +40,7 @@ One bash script is the product; every other file supports it.
 |---|---|
 | `bin/omp-termux` | The entire tool (bash, hard tabs, ~820 lines). |
 | `install.sh` | Device bootstrap: fetch raw `bin/omp-termux`, `bash -n` it, run device `install`. |
-|`patches/`|Vendored upstream PR #6350 patch: hand-written attribution header, then 14 diffs over 14 files, rebased onto v18.2.0 (upstream's own pidfd fallback replaced the `crates/pi-shell` hunks).|
+|`patches/`|Vendored upstream PR #6350 patch: attribution header, then 15 diffs over 15 files against v18.2.0.|
 | `.github/workflows/build.yml` | The only CI: cross-compile and publish one release per omp version. |
 | `docs/` | `README.zh-CN.md` (translation of `README.md`), `font.md` / `font.zh-CN.md` (Nerd Font notes). |
 | `work/`, `out/` | Gitignored: upstream clone + cargo target + opus prefix + napi-cli; built artifacts. |
@@ -59,7 +59,8 @@ OMP_TERMUX_MODE=device bash bin/omp-termux install path/to/pi_natives.android-ar
 ```
 
 - CI is reproduced locally by `./bin/omp-termux build "$VERSION"` — nothing else runs there.
-- History is one squashed commit: amend it instead of adding commits, and keep the message in `feat:`/body form.
+- One commit per meaningful change, conventional `type: subject` with a terse body; the released commit and
+  its tag are never rewritten.
 - `work/src` is a throwaway clone that `fetch_source` wipes or hard-resets: never hand-edit it.
 
 ## Code Conventions & Common Patterns
@@ -101,6 +102,9 @@ OMP_TERMUX_MODE=device bash bin/omp-termux install path/to/pi_natives.android-ar
   tool's own prefix (reordering breaks device install paths); `SCRATCH` is relative to `$HOME` on the device;
   `ADDON=pi_natives.android-arm64.node` is the loader-visible name used by install/build/fetch/upload/verify;
   `API=24`, `UPSTREAM`, `PR=6350`, `PR_PATCH_URL`, `REPO`, `WORK`/`OUT`/`SRC`/`NAPI_CLI_DIR`/`OPUS_PREFIX`.
+- Environment resolution lives in one place per side: `bun_root` (bun's rule for a *new* root), `bun_roots`,
+  `bun_active_root` (the root in use), `use_root` and `omp_path`; the device twins are `REMOTE_ROOT_PROBE`
+  with `remote_bun_root`/`remote_bun_env`. Installing, version lookup and the smoke test read these.
 - Key functions: `usage`, `install_addon`, `link_global_tree`, `fetch_release`, `device_install`, `run_verify`,
   `fetch_source`, `apply_patch`, `prepare_opus`, `cross_build`, `finalize_artifact`, `verify_artifact`,
   `resolve_target`, `workstation_install`, `install_on_device`, `cmd_install_self`, `cmd_update_self`,

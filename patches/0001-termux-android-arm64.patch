@@ -5,17 +5,14 @@
 #   author    : anatoli-tsinovoy
 #   fork pull : https://github.com/anatoli-tsinovoy/oh-my-pi/pull/6
 #   head sha  : dff59821aeb5efaa041095f4bb9c5811c71ce613  (base: main 3b3a6dc9bbd8)
-#   rebased   : 2026-09-15 onto v18.2.0. Upstream grew its own pidfd-less fallback
-#               (read_live_start_time, Option<pidfd>), so all of the patch's
-#               crates/pi-shell work except the module gate is now upstream's, and
-#               the two CHANGELOG hunks were dropped.
+#   rebased   : 2026-09-15 onto v18.2.0 (upstream carries the pidfd-less fallback now);
+#               the CHANGELOG hunks are dropped.
 #
 # 15 files, +280/-50 against v18.2.0. Summary:
 #   crates/pi-natives           arboard + clipboard/desktop modules become
 #                               cfg(not(target_os = "android")) — arboard has no
 #                               Android backend.
-#   crates/pi-shell             compiles its Linux process backend on Android too;
-#                               upstream's fallback needs the module to exist.
+#   crates/pi-shell             compiles its Linux process backend on Android too.
 #   crates/pi-builtins,         Bionic-compatible process discovery (/proc).
 #   crates/pi-walker
 #   packages/natives/scripts/   scopes RUSTC_BOOTSTRAP to xutf,pi_natives so a
