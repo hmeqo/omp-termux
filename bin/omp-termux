@@ -298,7 +298,7 @@ copy_adapter() { # $1 = package's native dir, $2 = dir holding the artifact (may
 }
 
 install_addon() { # $1 = path to a .node
-	local addon="$1" target_version="" n=0 d v artifact_dir
+	local addon="$1" target_version="" n=0 seen="" d v artifact_dir
 	[ -f "$addon" ] || die "no artifact to install: $addon"
 	artifact_dir="$(cd "$(dirname "$addon")" && pwd)"
 	# The artifact's sentinel is what the loader checks, so it decides the target version; a build tree is
@@ -312,7 +312,9 @@ install_addon() { # $1 = path to a .node
 	while IFS= read -r d; do
 		v="$(json_version "$d/package.json")"
 		if [ -n "$target_version" ] && [ "$v" != "$target_version" ]; then
-			warn "skipping $d (version $v != artifact $target_version)"
+			# The loader compares the sentinel against the package, so a copy of another version must not
+			# receive this binary. Superseded copies are reclaimed later; this pass only records them.
+			seen="${seen:+$seen, }${v:-unknown}"
 			continue
 		fi
 		mkdir -p "$d/native"
@@ -321,7 +323,7 @@ install_addon() { # $1 = path to a .node
 		msg "installed -> $d/native/$ADDON$(is_workspace_load "$d" && echo ' [workspace-load: sentinel check skipped]' || echo ' [node_modules: sentinel is enforced, versions must match]')"
 		n=$((n + 1))
 	done < <(natives_dirs)
-	[ "$n" -gt 0 ] || die "no matching @oh-my-pi/pi-natives directory found; install omp first: bun install -g @oh-my-pi/pi-coding-agent"
+	[ "$n" -gt 0 ] || die "no @oh-my-pi/pi-natives for ${target_version:-the artifact} on this device${seen:+ (found: $seen)}; install omp first: bun install -g @oh-my-pi/pi-coding-agent"
 }
 
 link_global_tree() { # On Termux, `bun install -g` (upstream's documented way) leaves <root>/bin/omp resolving
