@@ -102,9 +102,6 @@ jobs:
             gh release upload "$TAG" $FILES --clobber
           else
             gh release create "$TAG" --title "pi-natives $VERSION (android-arm64)" \
-              --notes "Prebuilt addon for Android aarch64, built from upstream v$VERSION with patches/0001-*.patch.
-
-          On a Termux device: curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | sh
-          It must match the @oh-my-pi/pi-natives version installed there ($VERSION)." \
+              --notes "The Android aarch64 build of @oh-my-pi/pi-natives." \
               $FILES
           fi
