@@ -190,6 +190,12 @@ grep -q "no build published here for the omp you run: $V2 (newest: omp-$V1)" /tm
 grep -q "you have          : omp-$V2 (addon missing)" /tmp/vnoarg.log &&
 	ok "no argument, device ahead: panel says the addon is missing" || no "no argument: panel hides the missing addon"
 chk "no argument, device ahead: bun not called" "$(grep -c 'install -g' "$LOG" 2>/dev/null || true)" "0"
+
+# The refusal covers the targets the tool picked; a version the caller names is theirs to step back to.
+: >"$LOG"; dev "file://$R20" install "$V1" >/tmp/vstep.log 2>&1; chk "named version steps back" "$?" "0"
+grep -q "no build published here" /tmp/vstep.log && no "named version: still refused" || ok "named version: not refused"
+chk "named version: installs the version asked for" "$(grep -o "install -g @oh-my-pi/pi-coding-agent@$V1" "$LOG" | head -1)" "install -g @oh-my-pi/pi-coding-agent@$V1"
+chk "named version: addon lands in that package" "$(ls "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V1@@@1/native" 2>/dev/null | tr '\n' ' ')" "desktop-adapter.js pi_natives.android-arm64.node "
 rm -rf "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V2@@@1"   # later sections expect $V0/$V1 only
 
 chk "update-self on identical content: already up to date" "$(dev "file://$R19" update-self 2>&1 | grep -c 'already up to date')" "1"

@@ -553,7 +553,7 @@ fetch_release() { # $1 = pi-natives version; puts the addon in RELEASE_ADDON, di
 }
 
 device_install() { # $1 = version, "latest", or a path to a .node; no argument = the version this device runs
-	local arg="${1:-}" want current up="" pub="" bun vlog
+	local arg="${1:-}" want current up="" pub="" explicit="" bun vlog
 	link_global_tree
 	if [ -n "$arg" ] && [ -f "$arg" ]; then
 		install_addon "$arg"
@@ -576,7 +576,7 @@ device_install() { # $1 = version, "latest", or a path to a .node; no argument =
 			want="$pub"
 			up="$(latest_version)"
 			;;
-		*) want="${arg#v}" ;;
+		*) explicit=1; want="${arg#v}" ;;
 	esac
 	installed_state
 	if [ -n "$pub" ]; then
@@ -601,7 +601,8 @@ device_install() { # $1 = version, "latest", or a path to a .node; no argument =
 	fi
 	rm -f "$vlog"
 	panel_line "you have" "omp-${CUR_VERSION:-none}$([ -n "$CUR_VERSION" ] && [ ! -f "$CUR_ADDON" ] && echo ' (addon missing)')"
-	if [ -n "$CUR_VERSION" ] && [ -n "$pub" ] && version_gt "$CUR_VERSION" "$pub"; then
+	# what is published bounds the targets the tool picks itself; a named version is the caller's call
+	if [ -z "$explicit" ] && [ -n "$CUR_VERSION" ] && [ -n "$pub" ] && version_gt "$CUR_VERSION" "$pub"; then
 		die "no build published here for the omp you run: $CUR_VERSION (newest: omp-$pub); nothing was changed
         wait for that build, or step back: bun install -g @oh-my-pi/pi-coding-agent@$pub"
 	fi
