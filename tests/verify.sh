@@ -129,6 +129,8 @@ dev "file://$R19" install >/tmp/v2.log 2>&1; chk "install (no argument) exits 0"
 chk "install (no argument) leaves omp alone" "$(grep -c 'install -g' "$LOG" 2>/dev/null || true)" "0"
 grep -q 'nothing to do' /tmp/v2.log && ok "install (no argument): already at the published version" ||
 	{ no "install (no argument) does not say nothing to do"; tail -3 /tmp/v2.log | sed 's|^|       |'; }
+chk "install (no argument): nothing to do comes last" "$(tail -n1 /tmp/v2.log | grep -c 'nothing to do')" "1"
+chk "install (no argument): does not re-link an existing link" "$(grep -c 'linked ' /tmp/v2.log)" "0"
 
 fake_curl "$FB/curl" "$V1" "$V1"   # this repository publishes $V1 now, which $R20 serves
 : >"$LOG"; rm -f "$CACHE"
@@ -260,6 +262,8 @@ for v in help doctor status verify; do ws "$v" && ok "workstation $v exits 0" ||
 ws install $V0 && ok "workstation install $V0 exits 0" || { no "workstation install fails"; tail -3 /tmp/vws.log | sed 's|^|       |'; }
 chk "workstation install: addon in place on the device" "$(ls "$TW/.bun/install/cache/@oh-my-pi/pi-natives@$V0@@@1/native" | tr '\n' ' ')" "desktop-adapter.js pi_natives.android-arm64.node "
 ws install-self && ok "workstation install-self exits 0" || no "install-self fails"
+ws install-self >/dev/null 2>&1 && ok "workstation install-self again exits 0" || no "install-self again fails"
+chk "install-self again: does not re-link an existing link" "$(grep -c 'linked ' /tmp/vws.log)" "0"
 chk "install-self links the tool" "$(readlink "$TW/.local/bin/omp-termux" 2>/dev/null)" "$TW/.local/opt/omp-termux/bin/omp-termux"
 ws uninstall-self && ok "workstation uninstall-self exits 0" || no "uninstall-self fails"
 chk "uninstall-self removes everything" "$([ -e "$TW/.local/opt/omp-termux" ] && echo exists || echo gone)" "gone"

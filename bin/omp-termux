@@ -293,7 +293,9 @@ bun_path() { # "" when bun is not installed
 			done < <(bun_roots)
 		fi
 	fi
-	[ -n "$b" ] && [ -x "$b" ] && printf '%s\n' "$b"
+	if [ -n "$b" ] && [ -x "$b" ]; then
+		printf '%s\n' "$b"
+	fi
 }
 
 omp_path() { # the `omp` the user runs: PATH first, then the roots (a non-interactive shell has neither)
@@ -307,6 +309,19 @@ omp_path() { # the `omp` the user runs: PATH first, then the roots (a non-intera
 }
 
 file_sha() { [ -f "${1:-}" ] || return 0; sha256sum "$1" 2>/dev/null | cut -d' ' -f1 || true; }
+
+tmp_dir() { # a directory this process may write scratch files to; "" when there is none
+	# $TMPDIR is unset in the non-login shells the tool often runs in (ssh, install.sh), and the fallbacks
+	# the rest of the tool uses are the home directory; /tmp only ever comes last.
+	local d
+	for d in "${TMPDIR:-}" "$HOME" /tmp; do
+		if [ -n "$d" ] && [ -d "$d" ] && [ -w "$d" ]; then
+			printf '%s\n' "$d"
+			return 0
+		fi
+	done
+	return 0
+}
 
 # --- this tool's own update check ---------------------------------------------------------------------
 
@@ -334,11 +349,13 @@ self_fetch() { # $1 = etag ("" for a plain GET), $2 = header file, $3 = body fil
 check_self_update() { # one line on stderr when main holds a different copy; never fails the verb
 	[ -n "${OMP_TERMUX_NO_UPDATE_CHECK:-}" ] && return 0
 	[ "$SELF" = "$PREFIX/bin/omp-termux" ] || return 0   # a checkout or the install.sh copy is not the installed one
-	local now at etag code hdr body codef remote cur vrel vremote
+	local now at etag code hdr body codef tmp remote cur vrel vremote
 	now="$(date +%s)"
-	hdr="${TMPDIR:-/tmp}/omp-termux.hdr.$$"
-	body="${TMPDIR:-/tmp}/omp-termux.new.$$"
-	codef="${TMPDIR:-/tmp}/omp-termux.code.$$"
+	tmp="$(tmp_dir)"
+	[ -n "$tmp" ] || return 0
+	hdr="$tmp/omp-termux.hdr.$$"
+	body="$tmp/omp-termux.new.$$"
+	codef="$tmp/omp-termux.code.$$"
 	at="$(cache_get checked_at)"
 	if [ -z "$at" ] || [ "$((now - at))" -ge "$SELF_TTL" ]; then
 		etag="$(cache_get etag)"
@@ -569,13 +586,14 @@ device_install() { # $1 = version, "latest", or a path to a .node; no argument =
 		msg "upstream $up is published but has no build here yet"
 	fi
 	# run_verify dies on a failed load, so it runs in a subshell; its output matters only when it fails
-	vlog="${TMPDIR:-/tmp}/omp-termux.verify.$$"
+	mkdir -p "$HOME/$SCRATCH"
+	vlog="$HOME/$SCRATCH/verify.log"
 	if [ "$CUR_VERSION" = "$want" ] && [ -f "$CUR_ADDON" ] && ( run_verify ) >"$vlog" 2>&1; then
 		panel_line "you have" "omp-$CUR_VERSION (addon in place, loads OK)"
 		rm -f "$vlog"
 		rm -rf "$HOME/$SCRATCH"
-		msg "nothing to do"
 		cmd_install_self
+		msg "nothing to do"
 		return 0
 	fi
 	if [ -s "$vlog" ]; then
@@ -650,7 +668,7 @@ print_status() {
 	omp_bin="$(omp_path)"
 	printf 'mode       : %s\n' "$MODE"
 	printf 'tool       : %s\n' "$SELF"
-	printf 'version    : v%s (%s)\n' "$TOOL_VERSION" "$(file_sha "$SELF" | cut -c1-12)"
+	printf 'version    : %s\n' "$(tool_label)"
 	rel="$(cache_get release)"       # filled by the self-update check: status makes no request itself
 	[ -n "$rel" ] && printf 'newest here: omp-%s\n' "$rel"
 	printf 'omp binary : %s\n' "${omp_bin:-not found}"
@@ -1023,10 +1041,20 @@ workstation_install() { # $1 = version, "latest", or a path to a .node (default:
 	install_on_device
 }
 
-link_self() {
+link_self() { # $PREFIX/bin/omp-termux linked into $BINDIR; quiet while the link is already right
+	local target="$BINDIR/omp-termux" want="$PREFIX/bin/omp-termux"
+	if [ -d "$target" ] && [ ! -L "$target" ]; then
+		# `ln -sfn` into a directory links inside it instead; leave a real directory alone.
+		warn "not linking $target: it is a directory, not a link"
+		return 0
+	fi
+	if [ "$(readlink "$target" 2>/dev/null)" = "$want" ]; then
+		path_reminder   # the link is right, but $BINDIR may still be missing from PATH
+		return 0
+	fi
 	mkdir -p "$BINDIR"
-	ln -sfn "$PREFIX/bin/omp-termux" "$BINDIR/omp-termux"
-	msg "linked $BINDIR/omp-termux -> $PREFIX/bin/omp-termux"
+	ln -sfn "$want" "$target"
+	msg "linked $target -> $want"
 	path_reminder
 }
 
@@ -1065,6 +1093,8 @@ cmd_update_self() {
 	link_self
 }
 
+tool_label() { printf 'v%s (%s)' "$TOOL_VERSION" "$(file_sha "$SELF" | cut -c1-12)"; }
+
 cmd_uninstall_self() {
 	msg "removing $BINDIR/omp-termux and $PREFIX"
 	rm -f "$BINDIR/omp-termux"
@@ -1102,7 +1132,7 @@ device_doctor() {
 	printf '  Termux         : %s\n' "${TERMUX_VERSION:-not detected}"
 	printf '  uname          : %s %s\n' "$(uname -s)" "$(uname -m)"
 	printf '  tool           : %s\n' "$SELF"
-	printf '  omp-termux     : v%s (%s)\n' "$TOOL_VERSION" "$(file_sha "$SELF" | cut -c1-12)"
+	printf '  omp-termux     : %s\n' "$(tool_label)"
 	printf '  bun            : %s\n' "${bun_bin:-MISSING}"
 	printf '  rustc / cargo  : %s / %s\n' "$(have rustc && rustc -vV | sed -n 's/^release: /release=/p' || echo 'MISSING (only needed for omp-termux build)')" "$(have cargo && cargo --version || echo MISSING)"
 	printf '  omp binary     : %s\n' "${omp_bin:-not found}"
@@ -1114,7 +1144,7 @@ device_doctor() {
 workstation_doctor() {
 	msg "cross toolchain check"
 	printf '  mode           : %s\n' "$MODE"
-	printf '  omp-termux     : v%s (%s)\n' "$TOOL_VERSION" "$(file_sha "$SELF" | cut -c1-12)"
+	printf '  omp-termux     : %s\n' "$(tool_label)"
 	printf '  NDK            : %s%s\n' "${NDK:-<none>}" "$(ndk_ok && echo ' ok' || echo ' MISSING')"
 	printf '  rustup         : %s\n' "$(have rustup && rustup --version 2>/dev/null | head -n1 || echo 'MISSING (required)')"
 	printf '  cargo / bun    : %s / %s\n' "$(have cargo && cargo --version || echo MISSING)" "$(have bun && bun --version || echo MISSING)"
@@ -1141,7 +1171,7 @@ case "${1:-help}" in
 esac
 
 case "${1:-help}" in
-	doctor) [ "$MODE" = device ] && device_doctor || workstation_doctor ;;
+	doctor) if [ "$MODE" = device ]; then device_doctor; else workstation_doctor; fi ;;
 	status) if [ "$MODE" = device ]; then print_status; else device_run status; fi ;;
 	verify) if [ "$MODE" = device ]; then run_verify; else device_run verify; fi ;;
 	install)
