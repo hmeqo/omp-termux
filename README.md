@@ -10,27 +10,26 @@ for keeping it in step.
 
 ### Prebuilt
 
-Needs Termux with `curl`: the script installs `bun` and omp first if they are missing.
+On Termux, one command:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/hmeqo/omp-termux/main/install.sh | sh
 ```
 
-The script installs `omp-termux` and puts the addon matching your omp version in the `native/` directory
-of the package `omp` uses:
+Needs Android 7+ (API 24), aarch64 and `curl` (`unzip` only when `pkg install bun` fails). The script installs
+a missing `bun` and omp — the newest build published here — then puts the matching addon in the `native/`
+directory of the package `omp` uses. Start `omp`: a successful start means the addon is in place.
+
+To move omp and its addon to the newest build published here:
 
 ```sh
-omp-termux install          # after you upgraded omp yourself: put the matching addon back
-omp-termux install latest   # upgrade omp to the newest release, with the matching addon
+omp-termux install latest   # omp + addon up to the newest build published here
 omp-termux update-self      # replace omp-termux itself
 ```
 
-Start `omp` afterwards: if it runs, the addon is in place. If your version is not available yet, try again
-later, or use the method below.
-
 ### Build from source
 
-On a workstation with the tools listed under [Requirements](#requirements):
+On a workstation with the [development tools](#development) and `sshd` on the device (`pkg install openssh`):
 
 ```sh
 omp-termux install-self         # once: put this tool on PATH (~/.local/bin)
@@ -39,20 +38,17 @@ omp-termux install              # everything: build, transfer, install on the de
 omp-termux install latest       # later: upgrade omp on the device, then install the matching addon
 ```
 
-## Requirements
+## Development
 
-Workstation (tested on Linux x86_64): `rustup`, `bun` ≥ 1.3.14, an Android NDK
+Building from source needs a workstation (tested on Linux x86_64) with `rustup`, `bun` ≥ 1.3.14, an Android NDK
 (taken from `OMP_TERMUX_NDK`, `ANDROID_NDK_ROOT`, `ANDROID_NDK_HOME` or your SDK's newest `ndk/*`), `cmake`,
-`ninja`, `git`, `curl`, `unzip`, `ssh`. `omp-termux doctor` names whatever is missing.
-
-Device: Android 7+ (API 24), aarch64, with `sshd` (`pkg install openssh`). Missing `bun` and omp are installed
-automatically.
+`ninja`, `git`, `curl`, `unzip` and `ssh`. `omp-termux doctor` names whatever is missing.
 
 ## Commands
 
 | command | what it does |
 |---|---|
-| `omp-termux install [version\|file]` | bring the device to that version and install the addon (`latest` = newest upstream release, default = the version it runs); builds only when needed and provisions a bare device; on the device, the same, for itself |
+| `omp-termux install [version\|file]` | bring the device to that version and install the addon (`latest` = the newest build this repository publishes, default = the version it runs); skips the download when the device already carries it, builds only when needed, and provisions a bare device; on the workstation `latest` is the newest upstream release |
 | `omp-termux status` / `verify` | show what is installed on the device / check that the addon loads |
 | `omp-termux build [version]` | only produce the addon, without touching the device |
 | `omp-termux device [user@host]` | show or save the device target |
@@ -63,6 +59,9 @@ automatically.
 ## Notes
 
 * The addon must match the version of `@oh-my-pi/pi-natives` you have; `omp-termux install` keeps them aligned.
+* `omp-termux` prints one line to stderr when a newer copy of itself is on `main`;
+  `OMP_TERMUX_NO_UPDATE_CHECK=1` turns that check off and `OMP_TERMUX_UPDATE_TTL` (seconds, default 86400)
+  sets how often it runs.
 * The device keeps the addon and `omp-termux`; `omp-termux uninstall-self` removes the tool and leaves omp alone.
 * Restart `omp` after installing: a running one keeps using the old addon.
 * On Termux the screen scrolls from the top when the software keyboard opens;

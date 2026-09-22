@@ -83,11 +83,23 @@ OMP_TERMUX_MODE=device bash bin/omp-termux install path/to/pi_natives.android-ar
   `-O`), `device_run` (forces `OMP_TERMUX_MODE=device`, removes `~/$SCRATCH` in the same session, interpolates its
   argument as a command line — pass shell-safe strings only).
 - Environment inputs are `OMP_TERMUX_*` (`MODE`, `HOST`, `PORT`, `NDK`, `REPO`, `RELEASE_BASE`, `RAW_BASE`,
-  `VERSION`); the device must never need an export to work — defaults plus the saved config file cover it.
+  `VERSION`, `NO_UPDATE_CHECK`, `UPDATE_TTL`); the device must never need an export to work — defaults plus the
+  saved config file cover it.
 - Argument hygiene: `install`, `build` and `device` reject a leading `-`; `device` also validates the target
   against `[A-Za-z0-9._@:-]`. Extending option parsing means extending those checks.
 - Own the two-mode contract in one place: workstation verbs shell out to the device, device verbs act locally.
   If a verb only makes sense on one side, say so in the header help text rather than silently half-working.
+  `install latest` is the one place where the two sides mean different things on purpose: on the device it is
+  the newest build *this repository* publishes (the only thing a device can be brought to), on the workstation
+  the newest upstream release, which it builds from source.
+- `check_self_update` runs before every verb except `help` and `update-self`, and only when the running file is
+  the installed copy. It compares the content hash of `main` (conditional GET, `ETag`) with its own, caches the
+  result for `OMP_TERMUX_UPDATE_TTL` seconds under `$PREFIX/cache/self-update` so most verbs never talk to the
+  network, and prints one line to stderr when they differ. It never writes to stdout and never changes an exit
+  code; the cache is also where `status` gets its `newest here` line. The version lookup resolves
+  `<repo>/releases/latest`'s 302 instead of the GitHub API: the API's 60 requests per hour are per IP and a
+  phone behind carrier NAT shares that with strangers, and a 403 used to be indistinguishable from "no newer
+  release".
 - Docs (`README.md`, `docs/*.md`) are a bilingual pair-set with **English canonical**: prose is translated, while
   every command, flag, path, env var, file name, error string and fenced code block stays byte-identical between
   the two files. Content may differ only where the audience differs (today: the `-CN` font variant exists only in
@@ -102,20 +114,28 @@ OMP_TERMUX_MODE=device bash bin/omp-termux install path/to/pi_natives.android-ar
   tool's own prefix (reordering breaks device install paths); `SCRATCH` is relative to `$HOME` on the device;
   `ADDON=pi_natives.android-arm64.node` is the loader-visible name used by install/build/fetch/upload/verify;
   `API=24`, `UPSTREAM`, `PR=6350`, `PR_PATCH_URL`, `REPO`, `WORK`/`OUT`/`SRC`/`NAPI_CLI_DIR`/`OPUS_PREFIX`.
+- `bin/omp-termux`'s own identity and update state: `TOOL_VERSION` (0.1.0, a human label only — every
+  comparison reads the content hash), `SELF_URL` (raw `main`, shared with `cmd_update_self`), `SELF_CACHE`
+  (`$PREFIX/cache/self-update`, removed by `uninstall-self` together with the prefix) and `SELF_TTL`.
 - Environment resolution lives in one place per side: `bun_root` (bun's rule for a *new* root), `bun_roots`,
   `bun_active_root` (the root in use), `use_root` and `omp_path`; the device twins are `REMOTE_ROOT_PROBE`
   with `remote_bun_root`/`remote_bun_env`. Installing, version lookup and the smoke test read these.
 - Key functions: `usage`, `install_addon`, `link_global_tree`, `fetch_release`, `device_install`, `run_verify`,
-  `fetch_source`, `apply_patch`, `prepare_opus`, `cross_build`, `finalize_artifact`, `verify_artifact`,
-  `resolve_target`, `workstation_install`, `install_on_device`, `cmd_install_self`, `cmd_update_self`,
-  `cmd_uninstall_self`, plus the dispatch `case` (line numbers drift; search by name).
+  `installed_state`/`newest_natives_dir` (what the device actually loads), `check_self_update`, `cache_get`/
+  `cache_put`, `fetch_source`, `apply_patch`, `prepare_opus`, `cross_build`, `finalize_artifact`,
+  `verify_artifact`, `resolve_target`, `workstation_install`, `install_on_device`, `cmd_install_self`,
+  `cmd_update_self`, `cmd_uninstall_self`, plus the dispatch `case` (line numbers drift; search by name).
 - Contracts worth re-reading before an edit: `fetch_release` removes the scratch dir before `die` so a missing
-  release changes nothing; `device_install` fetches the addon **before** upgrading omp; `verify_artifact`
-  hard-fails on non-`ARM aarch64`, any `GLIBC_` need, or `libc.so.6`/`ld-linux` NEEDED entries.
+  release changes nothing, and it only accepts an addon whose embedded sentinel equals the requested version;
+  `device_install` fetches the addon **before** upgrading omp, resolves `latest` from this repository's newest
+  published release, skips everything (download included) when that version is already installed and loads, and
+  fails only when the installed version is newer than anything published here; `verify_artifact` hard-fails on
+  non-`ARM aarch64`, any `GLIBC_` need, or `libc.so.6`/`ld-linux` NEEDED entries.
 - Cross-file couplings: asset names (`build.yml` ⇄ `$ADDON` ⇄ `fetch_release` ⇄ `finalize_artifact`), tag naming
   `omp-<version>` (workflow trigger, skip guard, download URL), URL bases (`REPO`/raw base in `install.sh` and
   the script), cache paths in CI mirroring `WORK`/`CARGO_TARGET`/`NAPI_CLI_DIR`/`OPUS_PREFIX`/`SRC`, and
-  `PR=6350` matching the patch header, `LICENSE` footer and README credits.
+  `PR=6350` matching the patch header, `LICENSE` footer and README credits, which is why `vendored_patch` only
+  accepts a patch file whose header names the current `$PR`.
 
 ## Runtime/Tooling Preferences
 
@@ -144,10 +164,16 @@ OMP_TERMUX_MODE=device bash bin/omp-termux install path/to/pi_natives.android-ar
 - CI has no test job: the only automated gates there are `bin/omp-termux build` and the in-script
   `verify_artifact` / `run_verify`.
 - Contracts to assert after touching install/update code: unknown verbs and option-looking arguments exit 1;
-  `install latest` with a missing release exits non-zero, calls no `bun install -g`, and prints
-  `nothing was changed`; repeated installs stay idempotent; the device end state is the addon plus
-  `~/.local/opt/omp-termux` plus one symlink (`$PREFIX/bin/omp-termux` on Termux, `~/.local/bin` otherwise) and
-  nothing else; `update-self` refuses a script that fails `bash -n` and keeps the old copy.
+  `install latest` on a device already at the published version exits 0, prints `nothing to do` and fetches
+  nothing, while one that needs a download but has no release exits non-zero, calls no `bun install -g`, and
+  prints `nothing was changed`; a device ahead of everything published here exits non-zero and leaves the addon
+  untouched; an addon whose sentinel is not the requested version is rejected; repeated installs stay idempotent;
+  the device end state is the addon plus `~/.local/opt/omp-termux` plus one symlink (`$PREFIX/bin/omp-termux` on
+  Termux, `~/.local/bin` otherwise) and nothing else; `update-self` refuses a script that fails `bash -n` and
+  keeps the old copy, and drops the self-update cache so the next verb re-checks.
+- The self-update check is asserted through a stubbed `curl` that logs every call: one stderr line when `main`
+  differs and none when it matches, no request at all while the cache is fresh or when
+  `OMP_TERMUX_NO_UPDATE_CHECK` is set, and its scratch files never survive into `$TMPDIR`.
 - Not verifiable without real hardware: bun's global layout behaviour on Android (the `link_global_tree` repair),
   the NDK cross-build, and anything touching `pkg`/`termux-*`.
 - Doc statements are the user-visible contract — `README.md`'s Notes/Limitations must stay true (device keeps

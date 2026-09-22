@@ -59,20 +59,20 @@ pkg_json() { printf '{"name":"@oh-my-pi/pi-natives","version":"%s"}' "$1"; }
 # $1 = where to write it, $2 = the newest upstream release it answers, $3 = this repository's release
 fake_curl() {
 	{
-		printf '#!/bin/sh\ncase "$*" in\n'
-		printf '*api.github.com/repos/*/omp-termux/releases/latest*) echo '"'"'{"tag_name": "omp-%s"}'"'"'; exit 0 ;;\n' "$3"
-		printf '*api.github.com*oh-my-pi*) echo '"'"'{"tag_name": "v%s"}'"'"'; exit 0 ;;\n' "$2"
+		printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"/tmp/v-curl.log"\ncase "$*" in\n'
+		printf '*github.com/can1357/oh-my-pi/releases/latest*) echo "location: https://github.com/can1357/oh-my-pi/releases/tag/v%s"; exit 0 ;;\n' "$2"
+		printf '*omp-termux/releases/latest*) echo "location: https://github.com/hmeqo/omp-termux/releases/tag/omp-%s"; exit 0 ;;\n' "$3"
 		printf 'esac\nexec %s "$@"\n' "$REAL_CURL"
 	} >"$1"
 	chmod +x "$1"
 }
 
 echo "== device smoke (isolated HOME + TERMUX_VERSION, stubbed curl/bun)"
-T=/tmp/vdev; FB=/tmp/vbin; RAW=/tmp/vraw; R19=/tmp/vrel19; R20=/tmp/vrel20; LOG=/tmp/v-bun.log
-for d in "$T" "$FB" "$RAW" "$R19" "$R20"; do
+T=/tmp/vdev; FB=/tmp/vbin; RAW=/tmp/vraw; R19=/tmp/vrel19; R20=/tmp/vrel20; LOG=/tmp/v-bun.log; CURL_LOG=/tmp/v-curl.log
+for d in "$T" "$FB" "$RAW" "$R19" "$R20" "$LOG" "$CURL_LOG"; do
 	case "$d" in /tmp/*) ;; *) echo "verify: refusing to touch $d" >&2; exit 1 ;; esac
 done
-rm -rf "$T" "$FB" "$RAW" "$R19" "$R20" "$LOG"
+rm -rf "$T" "$FB" "$RAW" "$R19" "$R20" "$LOG" "$CURL_LOG"
 mkdir -p "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V0@@@1/native" "$T/usr/bin" "$T/tmp" "$FB" "$RAW/bin" "$R19" "$R20" "$T/.config"
 pkg_json "$V0" >"$T/.bun/install/cache/@oh-my-pi/pi-natives@$V0@@@1/package.json"
 cp "$R/out/pi_natives.android-arm64.node" "$R/out/desktop-adapter.js" "$R19/"
@@ -84,7 +84,7 @@ assert b.count(b"$S0") == 1
 pathlib.Path("$R20/pi_natives.android-arm64.node").write_bytes(b.replace(b"$S0", b"$S1"))
 PY
 cp "$R/bin/omp-termux" "$RAW/bin/omp-termux"
-fake_curl "$FB/curl" "$V1" "$V1"
+fake_curl "$FB/curl" "$V1" "$V0"   # upstream is one ahead; this repository has published $V0, which $R19 serves
 cat >"$FB/bun" <<EOS
 #!/bin/sh
 echo "bun \$* BUN_INSTALL=\${BUN_INSTALL:-unset}" >>"$LOG"
@@ -113,27 +113,108 @@ PATH="$FB" "$REAL_SH" "$R/install.sh" >/tmp/v7.log 2>&1
 chk "bootstrap: without bash exits !=0" "$(nonzero $?)" "non0"
 grep -q 'install: bash is required' /tmp/v7.log && ok "bootstrap: says bash is required" || no "bootstrap: silent about bash"
 
-dev() { HOME=$T TMPDIR=$T/tmp PREFIX=$T/usr XDG_CONFIG_HOME=$T/.config XDG_CACHE_HOME=$T/.cache TERMUX_VERSION=0.118 PATH="$FB:$PATH" \
-	OMP_TERMUX_RAW_BASE="file://$RAW" OMP_TERMUX_RELEASE_BASE="$1" "$TOOL" ${2:-install} "${3:-}"; }
+CACHE="$T/.local/opt/omp-termux/cache/self-update"
+dev() { # $1 = release base, $2 = verb, $3 = argument, $4 = OMP_TERMUX_NO_UPDATE_CHECK
+	(
+		HOME=$T; TMPDIR=$T/tmp; PREFIX=$T/usr; XDG_CONFIG_HOME=$T/.config; XDG_CACHE_HOME=$T/.cache
+		TERMUX_VERSION=0.118; PATH="$FB:$PATH"; OMP_TERMUX_RAW_BASE="file://$RAW"; OMP_TERMUX_RELEASE_BASE="$1"
+		export HOME TMPDIR PREFIX XDG_CONFIG_HOME XDG_CACHE_HOME TERMUX_VERSION PATH OMP_TERMUX_RAW_BASE OMP_TERMUX_RELEASE_BASE
+		[ -n "${4:-}" ] && OMP_TERMUX_NO_UPDATE_CHECK="$4" && export OMP_TERMUX_NO_UPDATE_CHECK
+		"$TOOL" "${2:-install}" "${3:-}"
+	)
+}
 
-: >"$LOG"; dev "file://$R19" install >/tmp/v2.log 2>&1; chk "install (no argument) exits 0" "$?" "0"
+: >"$LOG"; rm -f "$CACHE"
+dev "file://$R19" install >/tmp/v2.log 2>&1; chk "install (no argument) exits 0" "$?" "0"
 chk "install (no argument) leaves omp alone" "$(grep -c 'install -g' "$LOG" 2>/dev/null || true)" "0"
-: >"$LOG"; dev "file://$R20" install latest >/tmp/v3.log 2>&1; chk "install latest exit=0" "$?" "0"
+grep -q 'nothing to do' /tmp/v2.log && ok "install (no argument): already at the published version" ||
+	{ no "install (no argument) does not say nothing to do"; tail -3 /tmp/v2.log | sed 's|^|       |'; }
+
+fake_curl "$FB/curl" "$V1" "$V1"   # this repository publishes $V1 now, which $R20 serves
+: >"$LOG"; rm -f "$CACHE"
+dev "file://$R20" install latest >/tmp/v3.log 2>&1; chk "install latest exit=0" "$?" "0"
 chk "calls bun to upgrade" "$(grep -o "install -g @oh-my-pi/pi-coding-agent@$V1" "$LOG" | head -1)" "install -g @oh-my-pi/pi-coding-agent@$V1"
 chk "addon in place in the new package" "$(ls "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V1@@@1/native" 2>/dev/null | tr '\n' ' ')" "desktop-adapter.js pi_natives.android-arm64.node "
+
+# Already at the published version: the release is never fetched, so nothing is downloaded.
+: >"$LOG"; : >"$CURL_LOG"
+dev "file:///tmp/vmissing" install latest >/tmp/v4.log 2>&1; chk "already up to date exits 0" "$?" "0"
+grep -q 'nothing to do' /tmp/v4.log && ok "already up to date: says nothing to do" || no "already up to date: silent about nothing to do"
+chk "already up to date: no download" "$(grep -c 'vmissing' "$CURL_LOG" 2>/dev/null || true)" "0"
+chk "already up to date: bun not called" "$(grep -c 'install -g' "$LOG" 2>/dev/null || true)" "0"
+
+# Upstream is ahead of what this repository publishes: that is news, not a failure.
+fake_curl "$FB/curl" "$V2" "$V1"   # upstream two ahead of what is published here
+: >"$LOG"
+dev "file://$R20" install latest >/tmp/vup.log 2>&1; chk "upstream ahead exits 0" "$?" "0"
+grep -q "upstream $V2 is published but has no build here yet" /tmp/vup.log &&
+	ok "upstream ahead: says the build is missing here" || no "upstream ahead: silent about the missing build"
+fake_curl "$FB/curl" "$V1" "$V1"
+
+# Behind and the release it needs is gone: a real failure, and nothing on the device changes.
+rm -rf "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V1@@@1"
 : >"$LOG"; dev "file:///tmp/vmissing" install latest >/tmp/v4.log 2>&1
-chk "missing release exits !=0" "$(nonzero $?)" "non0"
-chk "missing release: bun not called" "$(grep -c 'install -g' "$LOG" 2>/dev/null || true)" "0"
+chk "needed release missing exits !=0" "$(nonzero $?)" "non0"
+chk "needed release missing: bun not called" "$(grep -c 'install -g' "$LOG" 2>/dev/null || true)" "0"
 grep -q 'nothing was changed' /tmp/v4.log && ok "says nothing was changed" || no "silent about nothing was changed"
+
+# A release whose addon carries another version's sentinel is a wrong or truncated download, not an install.
+: >"$LOG"; dev "file://$R19" install latest >/tmp/vwrong.log 2>&1
+chk "wrong sentinel exits !=0" "$(nonzero $?)" "non0"
+grep -q "the downloaded addon is for $V0, not $V1" /tmp/vwrong.log && ok "names both versions" ||
+	{ no "does not name both versions"; tail -2 /tmp/vwrong.log | sed 's|^|       |'; }
+chk "wrong sentinel: bun not called" "$(grep -c 'install -g' "$LOG" 2>/dev/null || true)" "0"
+
+# The device carries a version this repository never published (omp upgraded by hand): refuse, touch nothing.
+mkdir -p "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V2@@@1/native"
+pkg_json "$V2" >"$T/.bun/install/cache/@oh-my-pi/pi-natives@$V2@@@1/package.json"
+cp "$R20/pi_natives.android-arm64.node" "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V2@@@1/native/"
+FA="$T/.bun/install/cache/@oh-my-pi/pi-natives@$V2@@@1/native/pi_natives.android-arm64.node"
+addon_before=$(sha256sum "$FA" | cut -d' ' -f1)
+: >"$LOG"; dev "file://$R20" install latest >/tmp/vahead.log 2>&1
+chk "device ahead exits !=0" "$(nonzero $?)" "non0"
+grep -q "no build published here for the omp you run: $V2 (newest: omp-$V1)" /tmp/vahead.log &&
+	ok "device ahead: names the versions" || { no "device ahead: does not name the versions"; tail -2 /tmp/vahead.log | sed 's|^|       |'; }
+grep -q 'nothing was changed' /tmp/vahead.log && ok "device ahead: nothing was changed" || no "device ahead: silent about nothing changing"
+chk "device ahead: bun not called" "$(grep -c 'install -g' "$LOG" 2>/dev/null || true)" "0"
+chk "device ahead: addon untouched" "$(sha256sum "$FA" | cut -d' ' -f1)" "$addon_before"
+
+# the no-argument form hits the same guard, with the addon gone: a device whose owner upgraded omp by hand
+rm -f "$FA"
+: >"$LOG"; dev "file://$R19" install >/tmp/vnoarg.log 2>&1
+chk "no argument, device ahead exits !=0" "$(nonzero $?)" "non0"
+grep -q "no build published here for the omp you run: $V2 (newest: omp-$V1)" /tmp/vnoarg.log &&
+	ok "no argument, device ahead: names both versions" || { no "no argument, device ahead: does not name them"; tail -2 /tmp/vnoarg.log | sed 's|^|       |'; }
+grep -q "you have          : omp-$V2 (addon missing)" /tmp/vnoarg.log &&
+	ok "no argument, device ahead: panel says the addon is missing" || no "no argument: panel hides the missing addon"
+chk "no argument, device ahead: bun not called" "$(grep -c 'install -g' "$LOG" 2>/dev/null || true)" "0"
+rm -rf "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V2@@@1"   # later sections expect $V0/$V1 only
 
 chk "update-self on identical content: already up to date" "$(dev "file://$R19" update-self 2>&1 | grep -c 'already up to date')" "1"
 printf '\n# moved on\n' >>"$RAW/bin/omp-termux"
+rm -f "$CACHE"
+dev "file://$R19" status >/tmp/vcache.log 2>&1   # populates the cached view of the world
+chk "status reports the published build" "$(grep -c "newest here: omp-$V1" /tmp/vcache.log)" "1"
+chk "status reports the tool version" "$(grep -c 'version    : v0.1.0 (' /tmp/vcache.log)" "1"
+chk "hint: one line when main differs" "$(dev "file://$R19" status 2>&1 >/dev/null | grep -c 'omp-termux update available:')" "1"
+chk "hint: names both versions and hashes" \
+	"$(dev "file://$R19" status 2>&1 >/dev/null | grep -c 'update available: v0.1.0 ([0-9a-f]\{12\}) -> v0.1.0 ([0-9a-f]\{12\}); run')" "1"
 dev "file://$R19" update-self >/tmp/v5.log 2>&1; chk "update-self on changed content exits 0" "$?" "0"
 grep -q 'updated [0-9a-f]\{12\} -> [0-9a-f]\{12\}' /tmp/v5.log && ok "prints both hashes" || no "does not print both hashes"
+chk "update-self drops the cached view" "$([ -f "$CACHE" ] && echo present || echo gone)" "gone"
+chk "hint: silent when main matches" "$(dev "file://$R19" status 2>&1 >/dev/null | grep -c 'update available')" "0"
+
+: >"$CURL_LOG"
+dev "file://$R19" status >/tmp/vttl.log 2>&1
+chk "ttl: no request while the cache is fresh" "$(grep -c 'bin/omp-termux\|releases/latest' "$CURL_LOG" 2>/dev/null || true)" "0"
+rm -f "$CACHE"; : >"$CURL_LOG"
+chk "opt-out: no hint" "$(dev "file://$R19" status "" 1 2>&1 >/dev/null | grep -c 'update available')" "0"
+chk "opt-out: no request" "$(grep -c 'omp-termux' "$CURL_LOG" 2>/dev/null || true)" "0"
+cp "$R/bin/omp-termux" "$RAW/bin/omp-termux"   # restore: later sections fetch the tool from here
 printf 'if then fi((\n' >"$RAW/bin/omp-termux"
 keep=$(sha256sum "$T/.local/opt/omp-termux/bin/omp-termux" | cut -c1-12)
 dev "file://$R19" update-self >/tmp/v6.log 2>&1; chk "broken script exits !=0" "$(nonzero $?)" "non0"
-cp "$R/bin/omp-termux" "$RAW/bin/omp-termux"   # restore: later sections fetch the tool from here
+cp "$R/bin/omp-termux" "$RAW/bin/omp-termux"
 chk "broken script leaves the old copy intact" "$(sha256sum "$T/.local/opt/omp-termux/bin/omp-termux" | cut -c1-12)" "$keep"
 
 echo
@@ -200,7 +281,7 @@ python3 -c "
 import pathlib
 b = pathlib.Path('$R/out/pi_natives.android-arm64.node').read_bytes()
 pathlib.Path('$RX/pi_natives.android-arm64.node').write_bytes(b.replace(b'$S0', b'$S2'))"
-cp "$FB/curl" "$FX/curl" 2>/dev/null || fake_curl "$FX/curl" "$V1" "$V1"
+fake_curl "$FX/curl" "$V1" "$V2"   # this repository publishes the $V2 the fixture carries
 printf '#!/bin/sh\nexit 0\n' >"$FX/bun"
 chmod +x "$FX/curl" "$FX/bun"
 HOME=$TX XDG_CACHE_HOME="$TX/.cache" TMPDIR=$TX/tmp PREFIX=$TX/usr XDG_CONFIG_HOME=$TX/.config TERMUX_VERSION=0.118 \
