@@ -88,6 +88,7 @@ fake_curl "$FB/curl" "$V1" "$V0"   # upstream is one ahead; this repository has 
 cat >"$FB/bun" <<EOS
 #!/bin/sh
 echo "bun \$* BUN_INSTALL=\${BUN_INSTALL:-unset}" >>"$LOG"
+[ -f "$T/bunfail" ] && exit 1
 if [ "\$1" = install ] && [ "\$2" = -g ]; then
 	v="\${3#@oh-my-pi/pi-coding-agent@}"
 	p="\${BUN_INSTALL:-$T/.bun}/install/cache/@oh-my-pi/pi-natives@\$v@@@1"
@@ -144,6 +145,17 @@ dev "file:///tmp/vmissing" install latest >/tmp/v4.log 2>&1; chk "already up to 
 grep -q 'nothing to do' /tmp/v4.log && ok "already up to date: says nothing to do" || no "already up to date: silent about nothing to do"
 chk "already up to date: no download" "$(grep -c 'vmissing' "$CURL_LOG" 2>/dev/null || true)" "0"
 chk "already up to date: bun not called" "$(grep -c 'install -g' "$LOG" 2>/dev/null || true)" "0"
+
+# An addon that is present but does not load must not reach the skip path: the release is fetched again.
+: >"$LOG"; : >"$CURL_LOG"; : >"$T/bunfail"
+dev "file://$R20" install latest >/tmp/vload.log 2>&1; loadrc=$?
+rm -f "$T/bunfail"
+chk "broken addon: the run fails on the load test" "$(nonzero "$loadrc")" "non0"
+grep -q 'the installed addon does not load; reinstalling it' /tmp/vload.log &&
+	ok "broken addon: says it is reinstalling" || { no "broken addon: silent about the reload"; tail -3 /tmp/vload.log | sed 's|^|       |'; }
+chk "broken addon: nothing to do is not printed" "$(grep -c 'nothing to do' /tmp/vload.log)" "0"
+chk "broken addon: the release is fetched again" "$(grep -c 'pi_natives.android-arm64.node' "$CURL_LOG")" "1"
+chk "broken addon: omp untouched" "$(grep -c 'install -g' "$LOG" 2>/dev/null || true)" "0"
 
 # Upstream is ahead of what this repository publishes: that is news, not a failure.
 fake_curl "$FB/curl" "$V2" "$V1"   # upstream two ahead of what is published here
