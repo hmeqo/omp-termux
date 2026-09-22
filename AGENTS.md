@@ -67,8 +67,9 @@ OMP_TERMUX_MODE=device bash bin/omp-termux install path/to/pi_natives.android-ar
 
 - `set -Eeuo pipefail` plus an `ERR` trap that prints `script:line:command`. With `pipefail`, any tolerated
   failure must be guarded (`|| true`, `|| warn …`).
-- Reporting goes through `msg` (stdout, `==>`), `warn` (stderr, non-fatal), `die` (stderr, `exit 1`). Tests use
-  `[ … ]`, never `[[ … ]]`; output is `printf`.
+- Reporting goes through `msg` (stdout, `==>`), `warn` (stderr, non-fatal), `die` (stderr, `exit 1`) and `hint`
+  (stderr, the `==>` look, for lines that must not appear on a verb's stdout). Tests use `[ … ]`, never
+  `[[ … ]]`; output is `printf`.
 - Function shape: `name() {` on its own line, `local` first, `# $1 = …` doc-comment on the definition line,
   sections separated by `# --- name ---` banners padded to ~100 columns.
 - Comments are reserved for non-obvious external constraints — the loader's sentinel rule, the bun
@@ -135,7 +136,8 @@ OMP_TERMUX_MODE=device bash bin/omp-termux install path/to/pi_natives.android-ar
   `omp-<version>` (workflow trigger, skip guard, download URL), URL bases (`REPO`/raw base in `install.sh` and
   the script), cache paths in CI mirroring `WORK`/`CARGO_TARGET`/`NAPI_CLI_DIR`/`OPUS_PREFIX`/`SRC`, and
   `PR=6350` matching the patch header, `LICENSE` footer and README credits, which is why `vendored_patch` only
-  accepts a patch file whose header names the current `$PR`.
+  accepts a patch file whose header names the current `$PR`, and the `TOOL_VERSION=` line that both the tool
+  and `install.sh` parse to print a version (the tool labels itself with it, the bootstrap only reports it).
 
 ## Runtime/Tooling Preferences
 

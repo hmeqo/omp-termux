@@ -239,6 +239,12 @@ natives_dirs() {
 	done < <(search_roots) | sort -u
 }
 
+version_max() { printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1; }
+version_min() { printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1; }
+version_ge() { [ "$1" = "$(version_max "$1" "$2")" ]; }
+version_gt() { [ "$1" != "$2" ] && version_ge "$1" "$2"; }
+version_lt() { [ "$1" != "$2" ] && [ "$1" = "$(version_min "$1" "$2")" ]; }
+
 newest_natives_dir() { # $1 = a root prefix, or "" for every root; prints the newest matching dir
 	local d v best="" dir=""
 	while IFS= read -r d; do
@@ -247,7 +253,7 @@ newest_natives_dir() { # $1 = a root prefix, or "" for every root; prints the ne
 		fi
 		v="$(json_version "$d/package.json")"
 		[ -n "$v" ] || continue
-		if [ -z "$best" ] || [ "$(printf '%s\n%s\n' "$v" "$best" | sort -V | tail -n1)" = "$v" ]; then
+		if [ -z "$best" ] || version_ge "$v" "$best"; then
 			best="$v"
 			dir="$d"
 		fi
@@ -274,8 +280,6 @@ installed_version() { # the version the root in use carries
 	installed_state
 	printf '%s\n' "$CUR_VERSION"
 }
-
-version_gt() { [ "$1" != "$2" ] && [ "$1" = "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" ]; }
 
 panel_line() { printf '==> %-17s : %s\n' "$1" "$2"; }
 
@@ -494,8 +498,7 @@ prune_superseded() { # $1 = the version now installed; drops older pi-natives co
 		[ -d "$cache" ] || continue
 		while IFS= read -r d; do
 			v="$(json_version "$d/package.json")"
-			[ -n "$v" ] && [ "$v" != "$keep" ] || continue
-			[ "$(printf '%s\n%s\n' "$v" "$keep" | sort -V | head -n1)" = "$v" ] || continue
+			[ -n "$v" ] && version_lt "$v" "$keep" || continue
 			base="$(basename "$d")"
 			stem="${base%@@@1}"
 			nested="$(dirname "$d")/${stem%@*}/${stem#*@}@@@1"
@@ -624,8 +627,8 @@ device_install() { # $1 = version, "latest", or a path to a .node; no argument =
 }
 
 run_verify() { # load the addon through the real loader, then smoke-test the CLI
-	local probe_dir="$WORK" probe d rc=0 real bun_bin
-	[ "$MODE" = device ] && probe_dir="$HOME/$SCRATCH"   # never leave a probe behind on the device
+	# only reached on the device (the workstation drives it there), so the probe lives in the scratch dir
+	local probe_dir="$HOME/$SCRATCH" probe d rc=0 real bun_bin
 	probe="$probe_dir/probe.mjs"
 	bun_bin="$(bun_path)"
 	mkdir -p "$probe_dir"
