@@ -5,10 +5,9 @@
 #   author    : anatoli-tsinovoy
 #   fork pull : https://github.com/anatoli-tsinovoy/oh-my-pi/pull/6
 #   head sha  : dff59821aeb5efaa041095f4bb9c5811c71ce613  (base: main 3b3a6dc9bbd8)
-#   rebased   : 2026-09-16 onto v18.2.1 (upstream carries the pidfd-less fallback now);
-#               the CHANGELOG hunks are dropped.
+#   rebased   : 2026-09-23 onto v18.2.10; the CHANGELOG hunks are dropped.
 #
-# 15 files, +280/-50 against v18.2.1. Summary:
+# 15 files, +288/-58 against v18.2.10. Summary:
 #   crates/pi-natives           arboard + clipboard/desktop modules become
 #                               cfg(not(target_os = "android")) — arboard has no
 #                               Android backend.
@@ -197,7 +196,7 @@ index e4ee3da..26a4da6 100644
  	let value = fs::read_to_string("/proc/meminfo")
  		.ok()?
 diff --git a/crates/pi-natives/Cargo.toml b/crates/pi-natives/Cargo.toml
-index 894a683..763faa0 100644
+index ee9d40e..bd99b49 100644
 --- a/crates/pi-natives/Cargo.toml
 +++ b/crates/pi-natives/Cargo.toml
 @@ -25,7 +25,6 @@ wayland-pipewire = ["dep:pipewire"]
@@ -219,7 +218,7 @@ index 894a683..763faa0 100644
  libc.workspace = true
  
 diff --git a/crates/pi-natives/src/lib.rs b/crates/pi-natives/src/lib.rs
-index 394692a..5d8d215 100644
+index 7a759c8..72a7b08 100644
 --- a/crates/pi-natives/src/lib.rs
 +++ b/crates/pi-natives/src/lib.rs
 @@ -26,8 +26,10 @@ pub mod appearance;
@@ -234,7 +233,7 @@ index 394692a..5d8d215 100644
  pub mod devicecheck;
  pub mod diff;
 diff --git a/crates/pi-shell/src/process.rs b/crates/pi-shell/src/process.rs
-index 9df7205..c27273f 100644
+index 3589677..9b80190 100644
 --- a/crates/pi-shell/src/process.rs
 +++ b/crates/pi-shell/src/process.rs
 @@ -16,7 +16,7 @@ pub use pi_builtins::ProcessStatus;
@@ -259,7 +258,7 @@ index 351c8a1..f9dd534 100644
  	if seconds < 0 {
  		return None;
 diff --git a/packages/coding-agent/scripts/build-binary.ts b/packages/coding-agent/scripts/build-binary.ts
-index 5f2a00a..83d8b0c 100644
+index 28ffeff..650d21d 100644
 --- a/packages/coding-agent/scripts/build-binary.ts
 +++ b/packages/coding-agent/scripts/build-binary.ts
 @@ -1,5 +1,6 @@
@@ -291,8 +290,8 @@ index 5f2a00a..83d8b0c 100644
 +
  async function main(): Promise<void> {
  	const crossBuild = resolveCrossBuild(Bun.env.CROSS_TARGET);
- 	const shouldAdhocSign = process.platform === "darwin" && !crossBuild && Bun.env.BUN_NO_CODESIGN_MACHO_BINARY !== "1";
-@@ -92,18 +109,22 @@ async function main(): Promise<void> {
+ 	const shouldAdhocSign =
+@@ -95,26 +112,30 @@ async function main(): Promise<void> {
  			crossBuild ? { ...Bun.env, TARGET_PLATFORM: crossBuild.platform, TARGET_ARCH: crossBuild.arch } : Bun.env,
  		);
  		try {
@@ -319,9 +318,25 @@ index 5f2a00a..83d8b0c 100644
 +				});
  
 -			if (shouldAdhocSign) {
--				await runCommand(["codesign", "--force", "--sign", "-", outputPath]);
+-				await runCommand([
+-					"codesign",
+-					"--force",
+-					"--sign",
+-					"-",
+-					"--entitlements",
+-					path.join(repoRoot, "scripts", "macos-entitlements.plist"),
+-					outputPath,
+-				]);
 +				if (shouldAdhocSign) {
-+					await runCommand(["codesign", "--force", "--sign", "-", outputPath]);
++					await runCommand([
++						"codesign",
++						"--force",
++						"--sign",
++						"-",
++						"--entitlements",
++						path.join(repoRoot, "scripts", "macos-entitlements.plist"),
++						outputPath,
++					]);
 +				}
  			}
  		} finally {
@@ -481,10 +496,10 @@ index 17d44f8..b7868a5 100644
 +export function adaptDesktopSession(NativeDesktopSession: null): null;
  export function adaptDesktopSession(NativeDesktopSession: unknown): AdaptedDesktopSessionConstructor;
 diff --git a/packages/natives/native/desktop-adapter.js b/packages/natives/native/desktop-adapter.js
-index 8b1402f..df9d8bd 100644
+index 491db8c..c7475b3 100644
 --- a/packages/natives/native/desktop-adapter.js
 +++ b/packages/natives/native/desktop-adapter.js
-@@ -94,6 +94,7 @@ function frameSignature(capture) {
+@@ -153,6 +153,7 @@ function frameSignature(capture) {
   * current addons already expose the complete API and pass through unchanged.
   */
  export function adaptDesktopSession(NativeDesktopSession) {
@@ -581,7 +596,7 @@ index 1073a6b..74ea36c 100644
  		const message = err instanceof Error ? err.message : String(err);
  		throw new Error(`Failed to install generated index.d.ts: ${message}`);
 diff --git a/packages/natives/test/desktop-adapter.test.ts b/packages/natives/test/desktop-adapter.test.ts
-index 9cdd742..e48c97c 100644
+index 6e56085..f3f1833 100644
 --- a/packages/natives/test/desktop-adapter.test.ts
 +++ b/packages/natives/test/desktop-adapter.test.ts
 @@ -1,4 +1,7 @@
@@ -592,10 +607,10 @@ index 9cdd742..e48c97c 100644
  import { adaptDesktopSession } from "../native/desktop-adapter.js";
  
  class LegacyDesktopSession {
-@@ -51,6 +54,56 @@ describe("legacy DesktopSession adapter", () => {
- 		expect(adapted).toBe(CurrentDesktopSession);
- 	});
+@@ -42,6 +45,56 @@ class LegacyDesktopSession {
+ }
  
+ describe("legacy DesktopSession adapter", () => {
 +	it("keeps unavailable desktop bindings usable through the public entrypoint", async () => {
 +		const fixtureDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-natives-public-entrypoint-"));
 +		try {
