@@ -5,9 +5,9 @@
 #   author    : anatoli-tsinovoy
 #   fork pull : https://github.com/anatoli-tsinovoy/oh-my-pi/pull/6
 #   head sha  : dff59821aeb5efaa041095f4bb9c5811c71ce613  (base: main 3b3a6dc9bbd8)
-#   rebased   : 2026-09-23 onto v18.2.10; the CHANGELOG hunks are dropped.
+#   rebased   : 2026-09-26 onto v18.3.1; the CHANGELOG hunks are dropped.
 #
-# 15 files, +288/-58 against v18.2.10. Summary:
+# 15 files, +278/-52 against v18.3.1. Summary:
 #   crates/pi-natives           arboard + clipboard/desktop modules become
 #                               cfg(not(target_os = "android")) — arboard has no
 #                               Android backend.
@@ -64,10 +64,10 @@ index b342a7e..08caffd 100644
  	}
  	match KillSignal::parse(value).ok()? {
 diff --git a/crates/pi-builtins/src/proc_snapshot.rs b/crates/pi-builtins/src/proc_snapshot.rs
-index 43ea867..ed1efd0 100644
+index 8d92d91..32fcf9c 100644
 --- a/crates/pi-builtins/src/proc_snapshot.rs
 +++ b/crates/pi-builtins/src/proc_snapshot.rs
-@@ -41,7 +41,7 @@ pub(crate) fn sanitize_process_command(command: String) -> String {
+@@ -62,7 +62,7 @@ pub(crate) fn sanitize_process_command(command: String) -> String {
  		.collect()
  }
  
@@ -75,22 +75,8 @@ index 43ea867..ed1efd0 100644
 +#[cfg(any(target_os = "android", target_os = "linux"))]
  mod proc_snapshot {
  	use std::{
- 		fs,
-@@ -208,12 +208,7 @@ mod proc_snapshot {
- 		}
- 
- 		pub fn age(&self) -> Option<Duration> {
--			let uptime = fs::read_to_string("/proc/uptime")
--				.ok()?
--				.split_whitespace()
--				.next()?
--				.parse::<f64>()
--				.ok()?;
-+			let uptime = uptime_seconds()?;
- 			let ticks = clock_ticks()? as f64;
- 			Some(Duration::from_secs_f64((uptime - self.stat.start_time as f64 / ticks).max(0.0)))
- 		}
-@@ -240,6 +235,21 @@ mod proc_snapshot {
+ 		collections::HashMap,
+@@ -258,6 +258,21 @@ mod proc_snapshot {
  				return read_stat(self.pid).is_some_and(|stat| stat.start_time == self.stat.start_time);
  			}
  			let Some(pidfd) = open_pidfd(self.pid) else {
@@ -112,20 +98,18 @@ index 43ea867..ed1efd0 100644
  				return false;
  			};
  			if read_stat(self.pid).is_none_or(|stat| stat.start_time != self.stat.start_time) {
-@@ -337,6 +347,29 @@ mod proc_snapshot {
+@@ -403,6 +418,7 @@ mod proc_snapshot {
  		Some((ids.next()?, ids.next()?))
  	}
  
 +	#[cfg(target_os = "linux")]
-+	fn uptime_seconds() -> Option<f64> {
-+		fs::read_to_string("/proc/uptime")
-+			.ok()?
-+			.split_whitespace()
-+			.next()?
-+			.parse()
-+			.ok()
-+	}
-+
+ 	fn uptime_seconds() -> Option<f64> {
+ 		fs::read_to_string("/proc/uptime")
+ 			.ok()?
+@@ -412,6 +428,19 @@ mod proc_snapshot {
+ 			.ok()
+ 	}
+ 
 +	#[cfg(target_os = "android")]
 +	fn uptime_seconds() -> Option<f64> {
 +		let mut uptime = libc::timespec {
@@ -142,16 +126,16 @@ index 43ea867..ed1efd0 100644
  	fn clock_ticks() -> Option<u64> {
  		// SAFETY: sysconf reads a process-global constant.
  		u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) })
-@@ -1080,7 +1113,7 @@ mod proc_snapshot {
+@@ -1345,7 +1374,7 @@ mod proc_snapshot {
  	}
  }
  
 -#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 +#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos", target_os = "windows"))]
- pub use proc_snapshot::ProcInfo;
+ pub use proc_snapshot::{ProcInfo, threads_by_pid};
  
  /// The processes a signal must never reach: this one and its ancestors.
-@@ -1104,7 +1137,7 @@ pub use proc_snapshot::ProcInfo;
+@@ -1369,7 +1398,7 @@ pub use proc_snapshot::{ProcInfo, threads_by_pid};
  ///
  /// Listing is unaffected: `pgrep` still reports ancestors and `ps` still shows
  /// them. Only signalling consults this.
@@ -160,7 +144,7 @@ index 43ea867..ed1efd0 100644
  pub(crate) struct HostProcesses {
  	/// This process and its ancestors, nearest first.
  	pub pids:  smallvec::SmallVec<[i32; 16]>,
-@@ -1117,17 +1150,17 @@ pub(crate) struct HostProcesses {
+@@ -1382,17 +1411,17 @@ pub(crate) struct HostProcesses {
  /// Keeping the walk over this rather than over [`ProcInfo`] lets the recycling
  /// cases — which are otherwise only reachable by winning a race against the OS —
  /// be tested with a synthetic tree.
@@ -183,10 +167,10 @@ index 43ea867..ed1efd0 100644
  	/// Walks the parent chain from the current process, taking one process-table
  	/// snapshot.
 diff --git a/crates/pi-builtins/src/ps.rs b/crates/pi-builtins/src/ps.rs
-index e4ee3da..26a4da6 100644
+index d1455cb..5f59d20 100644
 --- a/crates/pi-builtins/src/ps.rs
 +++ b/crates/pi-builtins/src/ps.rs
-@@ -1244,7 +1244,7 @@ fn format_ps_elapsed(duration: Duration) -> String {
+@@ -1347,7 +1347,7 @@ fn format_ps_elapsed(duration: Duration) -> String {
  	}
  }
  
@@ -196,7 +180,7 @@ index e4ee3da..26a4da6 100644
  	let value = fs::read_to_string("/proc/meminfo")
  		.ok()?
 diff --git a/crates/pi-natives/Cargo.toml b/crates/pi-natives/Cargo.toml
-index ee9d40e..bd99b49 100644
+index eec074f..62f8524 100644
 --- a/crates/pi-natives/Cargo.toml
 +++ b/crates/pi-natives/Cargo.toml
 @@ -25,7 +25,6 @@ wayland-pipewire = ["dep:pipewire"]
@@ -207,7 +191,7 @@ index ee9d40e..bd99b49 100644
  ast-grep-core.workspace = true
  base64.workspace = true
  clap.workspace = true
-@@ -100,6 +99,9 @@ objc2-foundation = "=0.3.2"
+@@ -101,6 +100,9 @@ objc2-foundation = "=0.3.2"
  objc2-application-services = { version = "=0.3.2", default-features = true }
  objc2-core-foundation = "=0.3.2"
  
@@ -218,10 +202,10 @@ index ee9d40e..bd99b49 100644
  libc.workspace = true
  
 diff --git a/crates/pi-natives/src/lib.rs b/crates/pi-natives/src/lib.rs
-index 7a759c8..72a7b08 100644
+index fddfae0..525e41a 100644
 --- a/crates/pi-natives/src/lib.rs
 +++ b/crates/pi-natives/src/lib.rs
-@@ -26,8 +26,10 @@ pub mod appearance;
+@@ -27,8 +27,10 @@ pub mod applefm;
  pub mod ast;
  pub mod audio;
  pub mod block;
@@ -246,10 +230,10 @@ index 3589677..9b80190 100644
  	use std::{
  		collections::HashSet,
 diff --git a/crates/pi-walker/src/lib.rs b/crates/pi-walker/src/lib.rs
-index 351c8a1..f9dd534 100644
+index b754f1d..e6a0493 100644
 --- a/crates/pi-walker/src/lib.rs
 +++ b/crates/pi-walker/src/lib.rs
-@@ -3486,6 +3486,7 @@ fn push_relative_name(relative: &mut String, name: &str) {
+@@ -3882,6 +3882,7 @@ fn push_relative_name(relative: &mut String, name: &str) {
  	relative.push_str(name);
  }
  
