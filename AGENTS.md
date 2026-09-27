@@ -19,15 +19,16 @@ One bash script is the product; every other file supports it.
 - Build path (workstation or CI): `workstation_build` → `fetch_source` (clone `UPSTREAM` at tag `v<version>` into
   `work/src`) → `ensure_rust_target` → `apply_patch` (vendored `patches/*.patch`, else the PR diff from the
   network) → `install_build_deps` → `prepare_opus` → `cross_build` (napi-rs CLI, `--profile ci`,
-  `aarch64-linux-android`) → `finalize_artifact` (renames the bare `pi_natives*.node` to `$ADDON`, also copies
+  `aarch64-linux-android`) → `finalize_artifact` (`stamp_artifact` writes the release into the addon's slot,
+  renames the bare `pi_natives*.node` to `$ADDON`, also copies
   `desktop-adapter.js` and the script itself into `out/`) → `verify_artifact`.
 - Install path (device): `device_install` → `link_global_tree` (Termux bun-layout repair) → `fetch_release` (or a
   local `.node`) → `install_addon` (`cp` into every matching `@oh-my-pi/pi-natives/native/`, skipping version
   mismatches) → `run_verify` (loads `native/index.js` through bun and checks the expected export set) →
   `cmd_install_self`.
 - Install path (workstation): `resolve_target` (sets the globals `TARGET_VERSION`/`TARGET_FILE`) →
-  `ensure_device_version` → `ensure_artifact` (freshness read from the sentinel inside `out/$ADDON`, not from a
-  manifest) → `install_on_device` (upload script + artifact into `~/$SCRATCH`, run `install <file>`, then
+  `ensure_device_version` → `ensure_artifact` (freshness read from the release `out/$ADDON` reports, not from
+  a manifest) → `install_on_device` (upload script + artifact into `~/$SCRATCH`, run `install <file>`, then
   `verify` over ssh).
 - CI (`.github/workflows/build.yml`) runs exactly `./bin/omp-termux build "$VERSION"` and publishes release
   `omp-<version>` with two assets: `out/pi_natives.android-arm64.node` and `out/desktop-adapter.js`.
@@ -72,7 +73,7 @@ OMP_TERMUX_MODE=device bash bin/omp-termux install path/to/pi_natives.android-ar
   `[[ … ]]`; output is `printf`.
 - Function shape: `name() {` on its own line, `local` first, `# $1 = …` doc-comment on the definition line,
   sections separated by `# --- name ---` banners padded to ~100 columns.
-- Comments are reserved for non-obvious external constraints — the loader's sentinel rule, the bun
+- Comments are reserved for non-obvious external constraints — the loader's release check, the bun
   cache/global layout, `audiopus_sys` having no `rerun-if-env-changed`, opus' CMake predating CMake 4, the
   `sh -c` wrapping because the device login shell may be fish. Never restate code.
 - The header block (lines 4-14) **is** the help text: `usage()` is `sed -n '4,14p' "$SELF"`. Adding a verb means
@@ -127,11 +128,17 @@ OMP_TERMUX_MODE=device bash bin/omp-termux install path/to/pi_natives.android-ar
   `verify_artifact`, `resolve_target`, `workstation_install`, `install_on_device`, `cmd_install_self`,
   `cmd_update_self`, `cmd_uninstall_self`, plus the dispatch `case` (line numbers drift; search by name).
 - Contracts worth re-reading before an edit: `fetch_release` removes the scratch dir before `die` so a missing
-  release changes nothing, and it only accepts an addon whose embedded sentinel equals the requested version;
+  release changes nothing, and it only accepts an addon that reports the requested version;
   `device_install` fetches the addon **before** upgrading omp, resolves `latest` from this repository's newest
   published release, skips everything (download included) when that version is already installed and loads, and
   fails only when the installed version is newer than anything published here; `verify_artifact` hard-fails on
-  non-`ARM aarch64`, any `GLIBC_` need, or `libc.so.6`/`ld-linux` NEEDED entries.
+  non-`ARM aarch64`, a missing NDK note, any `GLIBC_` need, or `libc.so.6`/`ld-linux` NEEDED entries.
+- Release identity of an addon: a 64-byte slot the build stamps after linking (`PI_NATIVES_VERSION_STAMP:<version>`
+  + NUL padding, reported at runtime by `__piNativesBuildVersion()`); releases before that slot exported a
+  per-release napi name (`__piNativesV18_3_2`) instead, and `artifact_version` reads both. The workstation path
+  drives the napi CLI directly, so it runs upstream's `scripts/stamp-native-version.ts` itself (`stamp_artifact`)
+  — the device path goes through upstream's `build-bindings.ts`, which stamps on its own. An unstamped addon
+  reports no release and the loader refuses to load it.
 - Cross-file couplings: asset names (`build.yml` ⇄ `$ADDON` ⇄ `fetch_release` ⇄ `finalize_artifact`), tag naming
   `omp-<version>` (workflow trigger, skip guard, download URL), URL bases (`REPO`/raw base in `install.sh` and
   the script), cache paths in CI mirroring `WORK`/`CARGO_TARGET`/`NAPI_CLI_DIR`/`OPUS_PREFIX`/`SRC`, and
@@ -169,7 +176,7 @@ OMP_TERMUX_MODE=device bash bin/omp-termux install path/to/pi_natives.android-ar
   `install latest` on a device already at the published version exits 0, prints `nothing to do` and fetches
   nothing, while one that needs a download but has no release exits non-zero, calls no `bun install -g`, and
   prints `nothing was changed`; a device ahead of everything published here exits non-zero and leaves the addon
-  untouched; an addon whose sentinel is not the requested version is rejected; repeated installs stay idempotent;
+  untouched; an addon that reports another version is rejected; repeated installs stay idempotent;
   the device end state is the addon plus `~/.local/opt/omp-termux` plus one symlink (`$PREFIX/bin/omp-termux` on
   Termux, `~/.local/bin` otherwise) and nothing else; `update-self` refuses a script that fails `bash -n` and
   keeps the old copy, and drops the self-update cache so the next verb re-checks.

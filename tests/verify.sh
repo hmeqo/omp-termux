@@ -38,10 +38,16 @@ REAL_SH="$(command -v sh || true)"
 [ -n "$REAL_CURL" ] || { echo "verify: curl is required" >&2; exit 1; }
 REAL_BUN="$(command -v bun || true)"
 
-# The fixtures follow the artifact in out/: its sentinel must equal the package version it is installed
-# into, and the bumped versions keep the digit count so the sentinel can be rewritten in place.
-V0="$(grep -ao '__piNativesV[0-9A-Za-z_]*' "$R/out/pi_natives.android-arm64.node" | head -1 | sed 's/^__piNativesV//; s/_/./g')"
-[ -n "$V0" ] || { echo "verify: no version sentinel in out/pi_natives.android-arm64.node" >&2; exit 1; }
+# The fixtures follow the artifact in out/: the release it reports must equal the package version it is
+# installed into, and the bumped versions keep the digit count so that release can be rewritten in place.
+ART="$R/out/pi_natives.android-arm64.node"
+V0="$(grep -ao 'PI_NATIVES_VERSION_STAMP:[-0-9A-Za-z._]*' "$ART" | head -1 | sed 's/^PI_NATIVES_VERSION_STAMP://')"
+ID="PI_NATIVES_VERSION_STAMP:"
+if [ -z "$V0" ]; then
+	ID="__piNativesV"
+	V0="$(grep -ao '__piNativesV[0-9A-Za-z_]*' "$ART" | head -1 | sed 's/^__piNativesV//; s/_/./g')"
+fi
+[ -n "$V0" ] || { echo "verify: out/pi_natives.android-arm64.node reports no release" >&2; exit 1; }
 bump_version() { # $1 = version, $2 = how many releases ahead of it
 	local major minor patch n
 	major="${1%%.*}"; minor="${1#*.}"; minor="${minor%%.*}"; patch="${1##*.}"
@@ -50,9 +56,16 @@ bump_version() { # $1 = version, $2 = how many releases ahead of it
 	printf '%s.%s.%s' "$major" "$minor" "$n"
 }
 V1="$(bump_version "$V0" 1)"; V2="$(bump_version "$V0" 2)"
-S0="__piNativesV$(printf '%s' "$V0" | tr . _)"
-S1="__piNativesV$(printf '%s' "$V1" | tr . _)"
-S2="__piNativesV$(printf '%s' "$V2" | tr . _)"
+release_id() { # $1 = version -> the byte string the artifact records it in
+	if [ "$ID" = "__piNativesV" ]; then
+		printf '__piNativesV%s' "$(printf '%s' "$1" | tr . _)"
+	else
+		printf 'PI_NATIVES_VERSION_STAMP:%s' "$1"
+	fi
+}
+S0="$(release_id "$V0")"
+S1="$(release_id "$V1")"
+S2="$(release_id "$V2")"
 
 pkg_json() { printf '{"name":"@oh-my-pi/pi-natives","version":"%s"}' "$1"; }
 
@@ -172,12 +185,12 @@ chk "needed release missing exits !=0" "$(nonzero $?)" "non0"
 chk "needed release missing: bun not called" "$(grep -c 'install -g' "$LOG" 2>/dev/null || true)" "0"
 grep -q 'nothing was changed' /tmp/v4.log && ok "says nothing was changed" || no "silent about nothing was changed"
 
-# A release whose addon carries another version's sentinel is a wrong or truncated download, not an install.
+# A release whose addon reports another version is a wrong or truncated download, not an install.
 : >"$LOG"; dev "file://$R19" install latest >/tmp/vwrong.log 2>&1
-chk "wrong sentinel exits !=0" "$(nonzero $?)" "non0"
+chk "wrong release exits !=0" "$(nonzero $?)" "non0"
 grep -q "the downloaded addon is for $V0, not $V1" /tmp/vwrong.log && ok "names both versions" ||
 	{ no "does not name both versions"; tail -2 /tmp/vwrong.log | sed 's|^|       |'; }
-chk "wrong sentinel: bun not called" "$(grep -c 'install -g' "$LOG" 2>/dev/null || true)" "0"
+chk "wrong release: bun not called" "$(grep -c 'install -g' "$LOG" 2>/dev/null || true)" "0"
 
 # The device carries a version this repository never published (omp upgraded by hand): refuse, touch nothing.
 mkdir -p "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V2@@@1/native"

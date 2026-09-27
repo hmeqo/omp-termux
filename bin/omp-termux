@@ -394,7 +394,7 @@ check_self_update() { # one line on stderr when main holds a different copy; nev
 	hint "omp-termux update available: v$TOOL_VERSION (${cur:0:12}) -> v$vremote (${remote:0:12}); run 'omp-termux update-self'"
 }
 
-# The loader skips its version-sentinel check when the native dir has no /node_modules/ segment.
+# The loader skips its release check when the native dir has no /node_modules/ segment.
 is_workspace_load() {
 	case "$1" in
 		*/node_modules/*) return 1 ;;
@@ -402,7 +402,16 @@ is_workspace_load() {
 	esac
 }
 
-artifact_version() { # $1 = .node file -> version from its embedded sentinel ("" when unreadable)
+# A current addon carries its release in a fixed 64-byte slot the build stamps after linking
+# (PI_NATIVES_VERSION_STAMP:<version> + NUL padding); releases before that slot exported a per-release napi
+# name instead (__piNativesV18_3_2). Both identify the addon, and a device can still hold a pre-stamp one.
+artifact_version() { # $1 = .node file -> the release it reports ("" when it carries no identity)
+	local stamp
+	stamp="$(grep -ao 'PI_NATIVES_VERSION_STAMP:[-0-9A-Za-z._]*' "${1:-}" 2>/dev/null | head -n1)" || true
+	if [ -n "$stamp" ]; then
+		printf '%s\n' "${stamp#PI_NATIVES_VERSION_STAMP:}"
+		return 0
+	fi
 	grep -ao '__piNativesV[0-9A-Za-z_]*' "${1:-}" 2>/dev/null | head -n1 | sed 's/^__piNativesV//; s/_/./g' || true
 }
 
@@ -423,18 +432,18 @@ install_addon() { # $1 = path to a .node
 	local addon="$1" target_version="" n=0 seen="" d v artifact_dir
 	[ -f "$addon" ] || die "no artifact to install: $addon"
 	artifact_dir="$(cd "$(dirname "$addon")" && pwd)"
-	# The artifact's sentinel is what the loader checks, so it decides the target version; a build tree is
-	# only a fallback when the sentinel cannot be read.
+	# What the artifact reports is what the loader checks, so it decides the target version; a build tree is
+	# only a fallback when the artifact reports no release.
 	target_version="$(artifact_version "$addon")"
 	if [ -n "$target_version" ]; then
-		msg "target version from the artifact's sentinel: $target_version"
+		msg "target version from the artifact: $target_version"
 	elif [ -f "$SRC/packages/natives/package.json" ]; then
 		target_version="$(json_version "$SRC/packages/natives/package.json")"
 	fi
 	while IFS= read -r d; do
 		v="$(json_version "$d/package.json")"
 		if [ -n "$target_version" ] && [ "$v" != "$target_version" ]; then
-			# The loader compares the sentinel against the package, so a copy of another version must not
+			# The loader compares that release against the package, so a copy of another version must not
 			# receive this binary. Superseded copies are reclaimed later; this pass only records them.
 			seen="${seen:+$seen, }${v:-unknown}"
 			continue
@@ -442,7 +451,7 @@ install_addon() { # $1 = path to a .node
 		mkdir -p "$d/native"
 		cp -f "$addon" "$d/native/$ADDON"
 		copy_adapter "$d/native" "$artifact_dir"
-		msg "installed -> $d/native/$ADDON$(is_workspace_load "$d" && echo ' [workspace-load: sentinel check skipped]' || echo ' [node_modules: sentinel is enforced, versions must match]')"
+		msg "installed -> $d/native/$ADDON$(is_workspace_load "$d" && echo ' [workspace-load: release check skipped]' || echo ' [node_modules: release must match]')"
 		n=$((n + 1))
 	done < <(natives_dirs)
 	[ "$n" -gt 0 ] || die "no @oh-my-pi/pi-natives for ${target_version:-the artifact} on this device${seen:+ (found: $seen)}; install omp first: bun install -g @oh-my-pi/pi-coding-agent"
@@ -535,7 +544,7 @@ device_ensure_bun() { # install bun on this device when it is missing; the works
 }
 
 fetch_release() { # $1 = pi-natives version; puts the addon in RELEASE_ADDON, dies when the release is missing
-	local version="$1" base f sentinel
+	local version="$1" base f reported
 	base="${OMP_TERMUX_RELEASE_BASE:-https://github.com/$REPO/releases/download/omp-$version}"
 	msg "fetching pi-natives $version for android-arm64"
 	mkdir -p "$HOME/$SCRATCH"
@@ -547,10 +556,10 @@ fetch_release() { # $1 = pi-natives version; puts the addon in RELEASE_ADDON, di
 		}
 		mv -f "$HOME/$SCRATCH/$f.part" "$HOME/$SCRATCH/$f"
 	done
-	sentinel="$(artifact_version "$HOME/$SCRATCH/$ADDON")"
-	if [ "$sentinel" != "$version" ]; then
+	reported="$(artifact_version "$HOME/$SCRATCH/$ADDON")"
+	if [ "$reported" != "$version" ]; then
 		rm -rf "$HOME/$SCRATCH"
-		die "the downloaded addon is $([ -n "$sentinel" ] && echo "for $sentinel, not $version" || echo "not a pi-natives build"); nothing was changed"
+		die "the downloaded addon is $([ -n "$reported" ] && echo "for $reported, not $version" || echo "not a pi-natives build"); nothing was changed"
 	fi
 	RELEASE_ADDON="$HOME/$SCRATCH/$ADDON"
 }
@@ -682,7 +691,7 @@ print_status() {
 		f="$d/native/$ADDON"
 		printf '%s\n  version=%s  addon=%s%s\n' "$d" "$v" \
 			"$([ -f "$f" ] && echo "$(du -h "$f" | cut -f1) $(date -r "$f" '+%F %T')" || echo missing)" \
-			"$(is_workspace_load "$d" && echo '  [workspace-load]' || echo '  [node_modules: sentinel enforced]')"
+			"$(is_workspace_load "$d" && echo '  [workspace-load]' || echo '  [node_modules: release enforced]')"
 	done < <(natives_dirs)
 }
 
@@ -755,7 +764,7 @@ device_build() { # $1 = version (default: the one installed on this device)
 	fetch_source "$version"
 	src_version="$(json_version "$SRC/packages/natives/package.json")"
 	[ "$src_version" = "$version" ] ||
-		warn "source version $src_version != installed version $version (usually still fine: the loader skips the sentinel check for Bun's cache layout)"
+		warn "source version $src_version != installed version $version (usually still fine: the loader skips the release check for Bun's cache layout)"
 	apply_patch
 	install_build_deps
 	have termux-wake-lock && { termux-wake-lock; trap 'termux-wake-unlock >/dev/null 2>&1 || true' EXIT; }
@@ -853,6 +862,17 @@ cross_build() {
 	finalize_artifact
 }
 
+# The loader rejects an addon whose __piNativesBuildVersion() is not the installed package version, and current
+# release sources leave that 64-byte slot empty: upstream's build-bindings.ts wrapper writes it after linking.
+# This path drives the napi CLI directly, so it has to run upstream's stamp tool itself. Releases before the
+# slot have no tool and no slot; their per-release napi name is the identity instead.
+stamp_artifact() {
+	local addon="$OUT/$ADDON" tool="$SRC/scripts/stamp-native-version.ts"
+	[ -f "$tool" ] || return 0
+	msg "stamping the release into $(basename "$addon")"
+	bun "$tool" "$addon" >/dev/null || die "stamping $addon failed"
+}
+
 # The loader looks for pi_natives.<platform>-<arch>.node, while @napi-rs/cli --target emits a bare name.
 # The script itself ships in out/ because install.sh fetches it alongside the addon.
 finalize_artifact() {
@@ -863,12 +883,13 @@ finalize_artifact() {
 		msg "renaming $(basename "$produced") -> $ADDON"
 		mv "$produced" "$OUT/$ADDON"
 	fi
+	stamp_artifact
 	cp -f "$SRC/packages/natives/native/desktop-adapter.js" "$OUT/desktop-adapter.js"
 	cp -f "$SELF" "$OUT/omp-termux" && chmod +x "$OUT/omp-termux"
 }
 
-verify_artifact() {
-	local addon="$OUT/$ADDON" info sentinel
+verify_artifact() { # $1 = the version the artifact must report (optional)
+	local addon="$OUT/$ADDON" info reported="${1:-}"
 	[ -f "$addon" ] || die "artifact missing: $addon"
 	msg "verifying $addon"
 	info="$(file -b "$addon")"
@@ -877,10 +898,13 @@ verify_artifact() {
 		*"ARM aarch64"*) ;;
 		*) die "artifact is not aarch64: $info" ;;
 	esac
-	case "$info" in
-		*Android*) msg "file reports an Android target" ;;
-		*) warn "file does not report Android — toolchain wiring may be wrong" ;;
-	esac
+	have readelf || die "readelf is required to verify the artifact"
+	# `file`'s wording for the NDK note depends on its own version, so read the note itself.
+	if readelf -n "$addon" 2>/dev/null | grep -q '\.note\.android\.ident'; then
+		msg "artifact carries the NDK Android note"
+	else
+		die "artifact has no .note.android.ident — it was not linked as an Android object"
+	fi
 	readelf -d "$addon" 2>/dev/null | grep NEEDED || true
 	if readelf -V "$addon" 2>/dev/null | grep -q 'GLIBC_'; then
 		die "artifact carries GLIBC_* version requirements — not a bionic object"
@@ -891,9 +915,12 @@ verify_artifact() {
 	msg "dynamic deps are bionic-only (libc.so / libdl.so / libm.so)"
 	nm -D --defined-only "$addon" 2>/dev/null | grep -q napi_register_module_v1 &&
 		msg "N-API entrypoint napi_register_module_v1 present"
-	sentinel="$(grep -ao '__piNativesV[0-9A-Za-z_]*' "$addon" | head -n1)"
-	[ -n "$sentinel" ] || die "no version sentinel in the artifact — the loader would reject it"
-	msg "embedded sentinel: $sentinel (must equal the installed @oh-my-pi/pi-natives version)"
+	reported="$(artifact_version "$addon")"
+	[ -n "$reported" ] || die "the artifact reports no release — the loader would reject it (unstamped slot)"
+	if [ -n "${1:-}" ] && [ "$reported" != "$1" ]; then
+		die "the artifact reports $reported, not the requested $1"
+	fi
+	msg "artifact reports release $reported (the loader compares it with @oh-my-pi/pi-natives' version)"
 	du -h "$addon" | sed 's/^/  size /'
 }
 
@@ -909,7 +936,7 @@ workstation_build() { # $1 = version
 	install_build_deps
 	prepare_opus
 	cross_build
-	verify_artifact
+	verify_artifact "$version"
 	msg "artifact for $version is in $OUT"
 }
 
@@ -1003,7 +1030,7 @@ resolve_target() {
 	if [ -n "$arg" ] && [ -f "$arg" ]; then
 		TARGET_FILE="$arg"
 		TARGET_VERSION="$(artifact_version "$arg")"
-		msg "installing the local artifact $arg${TARGET_VERSION:+ (sentinel $TARGET_VERSION)}"
+		msg "installing the local artifact $arg${TARGET_VERSION:+ (release $TARGET_VERSION)}"
 	elif [ -n "$arg" ]; then
 		TARGET_VERSION="${arg#v}"
 		if [ "$TARGET_VERSION" = latest ]; then
@@ -1035,7 +1062,7 @@ workstation_install() { # $1 = version, "latest", or a path to a .node (default:
 	if [ -n "$TARGET_VERSION" ]; then
 		ensure_device_version "$TARGET_VERSION"
 	else
-		warn "the artifact carries no readable sentinel; skipping the device omp check"
+		warn "the artifact reports no release; skipping the device omp check"
 	fi
 	if [ -n "$TARGET_FILE" ]; then
 		[ "$TARGET_FILE" = "$OUT/$ADDON" ] || { mkdir -p "$OUT"; cp -f "$TARGET_FILE" "$OUT/$ADDON"; }
