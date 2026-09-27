@@ -360,13 +360,19 @@ check_self_update() { # one line on stderr when main holds a different copy; nev
 	hdr="$tmp/omp-termux.hdr.$$"
 	body="$tmp/omp-termux.new.$$"
 	codef="$tmp/omp-termux.code.$$"
+	cur="$(file_sha "$SELF")"
+	# The cached remote hash is only comparable to the copy that fetched it: once anything else replaced this
+	# file (install-self, the curl bootstrap, a manual copy) it would be compared against the wrong one, so
+	# re-check instead of trusting it.
 	at="$(cache_get checked_at)"
+	[ "$(cache_get self)" = "$cur" ] || at=""
 	if [ -z "$at" ] || [ "$((now - at))" -ge "$SELF_TTL" ]; then
 		etag="$(cache_get etag)"
 		# the exit status is the gate (a partial or 4xx transfer fails there); the code only picks out 304
 		if self_fetch "$etag" "$hdr" "$body" "$codef"; then
 			code="$(cat "$codef" 2>/dev/null || true)"
 			cache_put checked_at "$now"
+			cache_put self "$cur"
 			if [ "$code" != 304 ]; then
 				cache_put etag "$(sed -n 's/^[Ee]tag: //p' "$hdr" | head -n1 | tr -d '\r')"
 				cache_put hash "$(file_sha "$body")"
@@ -375,6 +381,7 @@ check_self_update() { # one line on stderr when main holds a different copy; nev
 		else
 			# offline or broken endpoint: record the attempt, or every verb pays another timeout
 			cache_put checked_at "$now"
+			cache_put self "$cur"
 		fi
 	fi
 	rm -f "$hdr" "$body" "$codef"
@@ -387,7 +394,6 @@ check_self_update() { # one line on stderr when main holds a different copy; nev
 	fi
 	remote="$(cache_get hash)"
 	[ -n "$remote" ] || return 0
-	cur="$(file_sha "$SELF")"
 	[ "$remote" = "$cur" ] && return 0
 	vremote="$(cache_get version)"
 	[ -n "$vremote" ] || vremote=main

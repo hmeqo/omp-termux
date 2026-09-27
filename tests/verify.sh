@@ -252,6 +252,13 @@ chk "hint: silent when main matches" "$(dev "file://$R19" status 2>&1 >/dev/null
 : >"$CURL_LOG"
 dev "file://$R19" status >/tmp/vttl.log 2>&1
 chk "ttl: no request while the cache is fresh" "$(grep -c 'bin/omp-termux\|releases/latest' "$CURL_LOG" 2>/dev/null || true)" "0"
+# A cache another copy wrote (install-self, a manual copy, the bootstrap) describes a file that is not this
+# one: trusting its remote hash would report an update that does not exist.
+sed -i 's/^hash=.*/hash=0/; s/^self=.*/self=0/' "$CACHE"
+: >"$CURL_LOG"
+chk "cache from another copy: no invented hint" "$(dev "file://$R19" status 2>&1 >/dev/null | grep -c 'update available')" "0"
+chk "cache from another copy: re-checks" "$(grep -c 'bin/omp-termux' "$CURL_LOG" 2>/dev/null || true)" "1"
+chk "cache from another copy: records this copy" "$(grep -c "^self=$(sha256sum "$T/.local/opt/omp-termux/bin/omp-termux" | cut -d' ' -f1)$" "$CACHE")" "1"
 rm -f "$CACHE"; : >"$CURL_LOG"
 chk "opt-out: no hint" "$(dev "file://$R19" status "" 1 2>&1 >/dev/null | grep -c 'update available')" "0"
 chk "opt-out: no request" "$(grep -c 'omp-termux' "$CURL_LOG" 2>/dev/null || true)" "0"
