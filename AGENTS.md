@@ -165,8 +165,10 @@ OMP_TERMUX_MODE=device bash bin/omp-termux install path/to/pi_natives.android-ar
 
 - `sh tests/verify.sh` is the local gate: syntax checks, then both modes against a fake device (stubbed
   `ssh`/`scp`/`bun`/`curl`, isolated `HOME`/`TMPDIR`/`XDG_CONFIG_HOME`/`FAKE_HOME`, `TERMUX_VERSION=0.118`). The
-  device-side and workstation-side sections need `out/pi_natives.android-arm64.node` and are skipped without it.
-  It never touches a real device or the network, and refuses to run if its `/tmp` paths are not what it expects.
+  device-side and workstation-side sections need `out/pi_natives.android-arm64.node` and are skipped without it;
+  one release fixture is rewritten to record its version the pre-stamp way, so both identities the tool reads
+  are exercised. It never touches a real device or the network, and refuses to run if its `/tmp` paths are not
+  what it expects.
 - Extend that script whenever a bug escapes it: the harness is what caught the truncated `fetch_release`, the
   prune that deleted a link target and the `ln -sfn`-into-a-directory case, but the "no-argument install picked
   the oldest version" bug only showed up on a real device.

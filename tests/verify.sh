@@ -90,11 +90,23 @@ mkdir -p "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V0@@@1/native" "$T/usr/bin
 pkg_json "$V0" >"$T/.bun/install/cache/@oh-my-pi/pi-natives@$V0@@@1/package.json"
 cp "$R/out/pi_natives.android-arm64.node" "$R/out/desktop-adapter.js" "$R19/"
 cp "$R/out/desktop-adapter.js" "$R20/"
+# $R19 serves the artifact as built. $R20 serves the same bytes with $V1 recorded the pre-stamp way (a
+# __piNativesV<major>_<minor>_<patch> napi name, no stamp), so both identities the tool reads stay covered by
+# the cases below — those are also what a release published before the stamp looks like.
+LEGACY1="__piNativesV$(printf '%s' "$V1" | tr . _)"
 python3 - <<PY
 import pathlib
-b = pathlib.Path("$R19/pi_natives.android-arm64.node").read_bytes()
-assert b.count(b"$S0") == 1
-pathlib.Path("$R20/pi_natives.android-arm64.node").write_bytes(b.replace(b"$S0", b"$S1"))
+source = pathlib.Path("$R19/pi_natives.android-arm64.node").read_bytes()
+if b"$ID" == b"__piNativesV" or source.count(b"$S0") != 1:
+	pathlib.Path("$R20/pi_natives.android-arm64.node").write_bytes(source.replace(b"$S0", b"$S1"))
+else:
+	magic, legacy = b"$ID", b"$LEGACY1"
+	assert source.count(magic) == 1
+	at = source.index(magic)
+	out = bytearray(source)
+	out[at:at + len(magic) + len(legacy)] = bytes(len(magic)) + legacy
+	assert out.count(legacy) == 1 and out.count(magic) == 0
+	pathlib.Path("$R20/pi_natives.android-arm64.node").write_bytes(bytes(out))
 PY
 cp "$R/bin/omp-termux" "$RAW/bin/omp-termux"
 fake_curl "$FB/curl" "$V1" "$V0"   # upstream is one ahead; this repository has published $V0, which $R19 serves
