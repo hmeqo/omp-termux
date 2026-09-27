@@ -8,9 +8,9 @@ for keeping it in step.
 
 ## Install
 
-### Prebuilt
+### On Termux
 
-On Termux, one command:
+One command:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/hmeqo/omp-termux/main/install.sh | sh
@@ -20,41 +20,41 @@ Needs Android 7+ (API 24), aarch64 and `curl` (`unzip` only when `pkg install bu
 a missing `bun` and omp — the newest build published here — then puts the matching addon in the `native/`
 directory of the package `omp` uses. Start `omp`: a successful start means the addon is in place.
 
-To move omp and its addon to the newest build published here:
+### Keep it in step
 
 ```sh
 omp-termux install latest   # omp + addon up to the newest build published here
 omp-termux update-self      # replace omp-termux itself
 ```
 
-### Build from source
+### Build it yourself
 
-On a workstation with the [development tools](#development) and `sshd` on the device (`pkg install openssh`):
+On a workstation, with the [development tools](#development):
 
 ```sh
-omp-termux install-self         # once: put this tool on PATH (~/.local/bin)
-omp-termux device user@phone    # once: remember the device (sshd, port 8022)
-omp-termux install              # everything: build, transfer, install on the device, verify
-omp-termux install latest       # later: upgrade omp on the device, then install the matching addon
+./bin/omp-termux build 18.3.4   # cross-compiles out/pi_natives.android-arm64.node
 ```
+
+Copy `out/pi_natives.android-arm64.node` and `out/desktop-adapter.js` into the `native/` directory of the
+`@oh-my-pi/pi-natives` package on the device. `omp-termux build` on the device does the same natively (hours,
+inside `tmux`); without a version both build the newest upstream release.
 
 ## Development
 
 Building from source needs a workstation (tested on Linux x86_64) with `rustup`, `bun` ≥ 1.3.14, an Android NDK
 (taken from `OMP_TERMUX_NDK`, `ANDROID_NDK_ROOT`, `ANDROID_NDK_HOME` or your SDK's newest `ndk/*`), `cmake`,
-`ninja`, `git`, `curl`, `unzip` and `ssh`. `omp-termux doctor` names whatever is missing.
+`ninja`, `git`, `curl` and `unzip`. `omp-termux doctor` names whatever is missing.
 
 ## Commands
 
 | command | what it does |
 |---|---|
-| `omp-termux install [version\|file]` | bring the device to that version and install the addon (`latest` = the newest build this repository publishes, default = the version it runs); skips the download when the device already carries it, builds only when needed, and provisions a bare device; on the workstation `latest` is the newest upstream release |
-| `omp-termux status` / `verify` | show what is installed on the device / check that the addon loads |
-| `omp-termux build [version]` | only produce the addon, without touching the device |
-| `omp-termux device [user@host]` | show or save the device target |
+| `omp-termux install [version\|file]` | bring this device to that version and install the addon (`latest` = the newest build this repository publishes, default = the version it runs); skips the download when it is already there, builds only when needed, and provisions a bare device |
+| `omp-termux status` / `verify` | show what is installed / check that the addon loads |
+| `omp-termux build [version]` | produce the addon only (cross-compile on a workstation, natively on the device) |
 | `omp-termux update-self` | replace the installed `omp-termux` with the newest from this repository |
 | `omp-termux install-self` / `uninstall-self` | optional: keep this tool on PATH (`~/.local/opt/omp-termux`, `~/.local/bin/omp-termux`), or remove it |
-| `omp-termux doctor` | check the cross toolchain |
+| `omp-termux doctor` | check the cross toolchain (workstation) or the environment (device) |
 
 ## Notes
 

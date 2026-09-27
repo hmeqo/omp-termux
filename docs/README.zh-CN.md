@@ -8,9 +8,9 @@
 
 ## 安装
 
-### 预编译
+### 在 Termux 上
 
-在 Termux 上执行:
+一条命令:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/hmeqo/omp-termux/main/install.sh | sh
@@ -20,41 +20,41 @@ curl -fsSL https://raw.githubusercontent.com/hmeqo/omp-termux/main/install.sh | 
 脚本会安装缺失的 `bun` 与 omp(取本仓库已发布的最新构建),再把匹配的插件放进 `omp` 所用包的 `native/` 目录;
 启动 `omp` 能跑起来即表示插件已就位。
 
-要把 omp 与插件升到本仓库已发布的最新构建:
+### 保持同步
 
 ```sh
-omp-termux install latest   # 把 omp 与插件升到本仓库已发布的最新构建
-omp-termux update-self      # 更新 omp-termux 自身
+omp-termux install latest   # omp + addon up to the newest build published here
+omp-termux update-self      # replace omp-termux itself
 ```
 
-### 从源码构建
+### 自己编译
 
-在工作站上,需要 [开发依赖](#开发) 里列出的工具,以及设备上的 `sshd`(`pkg install openssh`):
+在工作站上,需要 [开发依赖](#开发) 里列出的工具:
 
 ```sh
-omp-termux install-self         # 一次性:装到 PATH(~/.local/bin)
-omp-termux device user@phone    # 一次性:记住设备(sshd,端口 8022)
-omp-termux install              # 一条命令:编译、传输、在设备上安装、验证
-omp-termux install latest       # 以后:升级设备上的 omp,并安装匹配的插件
+./bin/omp-termux build 18.3.4   # cross-compiles out/pi_natives.android-arm64.node
 ```
+
+把 `out/pi_natives.android-arm64.node` 与 `out/desktop-adapter.js` 复制到设备上 `@oh-my-pi/pi-natives`
+包的 `native/` 目录。在设备上直接跑 `omp-termux build` 也能得到同样的产物(耗时以小时计,建议放进 `tmux`);
+不带版本号时两者都编译上游最新版本。
 
 ## 开发
 
 从源码构建需要一台工作站(在 Linux x86_64 上验证),装有 `rustup`、`bun` ≥ 1.3.14、Android NDK
 (依次取 `OMP_TERMUX_NDK`、`ANDROID_NDK_ROOT`、`ANDROID_NDK_HOME`,或用 SDK 里最新的 `ndk/*`)、`cmake`、
-`ninja`、`git`、`curl`、`unzip`、`ssh`。缺哪个,`omp-termux doctor` 会指出来。
+`ninja`、`git`、`curl`、`unzip`。缺哪个,`omp-termux doctor` 会指出来。
 
 ## 命令
 
 | 命令 | 说明 |
 |---|---|
-| `omp-termux install [version\|file]` | 让设备用上该版本并安装插件(`latest` = 本仓库已发布的最新构建,缺省 = 设备当前版本);设备已带上它时跳过下载,只在需要时编译,设备上没有 bun/omp 时也会自动装好;在工作站上 `latest` 仍指上游最新 release |
-| `omp-termux status` / `verify` | 查看设备上装了哪个版本 / 检查插件是否正常加载 |
-| `omp-termux build [version]` | 只编译产物,不碰设备 |
-| `omp-termux device [user@host]` | 查看或设置设备地址 |
+| `omp-termux install [version\|file]` | 让本机用上该版本并安装插件(`latest` = 本仓库已发布的最新构建,缺省 = 当前运行的版本);已经装上就跳过下载,只在需要时编译,设备上没有 bun/omp 时也会自动装好 |
+| `omp-termux status` / `verify` | 查看装了哪个版本 / 检查插件是否正常加载 |
+| `omp-termux build [version]` | 只编译产物(工作站上交叉编译,设备上原生编译) |
 | `omp-termux update-self` | 把已安装的 `omp-termux` 换成仓库里的最新版本 |
 | `omp-termux install-self` / `uninstall-self` | 可选:把本工具装到 PATH(`~/.local/opt/omp-termux`、`~/.local/bin/omp-termux`),或卸载 |
-| `omp-termux doctor` | 检查交叉工具链 |
+| `omp-termux doctor` | 检查交叉工具链(工作站)或运行环境(设备) |
 
 ## 说明
 

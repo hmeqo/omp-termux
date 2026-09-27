@@ -1,12 +1,12 @@
 #!/bin/sh
-# Local verification: static gates, then both modes against a fake device.
+# Local verification: static gates, then the device-side paths against a fake device.
 #
 #   sh tests/verify.sh
 #
-# The device-side and workstation-side sections need out/pi_natives.android-arm64.node (run
-# `./bin/omp-termux build <version>` first); without it they are skipped. Nothing here touches a real device or
-# the network: ssh/scp/bun/curl are stubbed, HOME/TMPDIR/XDG_CONFIG_HOME are isolated, and device mode is forced
-# with TERMUX_VERSION. Every path that may be removed is a hard-coded /tmp path and asserted below.
+# The device sections need out/pi_natives.android-arm64.node (run `./bin/omp-termux build <version>` first);
+# without it they are skipped. Nothing here touches a real device or the network: bun/curl are stubbed,
+# HOME/TMPDIR/XDG_CONFIG_HOME are isolated, and device mode is forced with TERMUX_VERSION. Every path that may
+# be removed is a hard-coded /tmp path and asserted below.
 set -u
 R=$(cd "$(dirname "$0")/.." && pwd)
 [ -n "$R" ] && [ -f "$R/bin/omp-termux" ] || { echo "verify: cannot locate the repository; refusing to run" >&2; exit 1; }
@@ -26,7 +26,7 @@ bash "$R/bin/omp-termux" install --help >/dev/null 2>&1; chk "install --help ref
 bash "$R/bin/omp-termux" build --help >/dev/null 2>&1; chk "build --help refused" "$?" "1"
 
 if [ ! -f "$R/out/pi_natives.android-arm64.node" ]; then
-	echo "== skipping the device and workstation sections (no out/pi_natives.android-arm64.node; run ./bin/omp-termux build <version> first)"
+	echo "== skipping the device sections (no out/pi_natives.android-arm64.node; run ./bin/omp-termux build <version> first)"
 	echo
 	echo "failures: $fail"
 	exit $fail
@@ -252,8 +252,8 @@ chk "hint: silent when main matches" "$(dev "file://$R19" status 2>&1 >/dev/null
 : >"$CURL_LOG"
 dev "file://$R19" status >/tmp/vttl.log 2>&1
 chk "ttl: no request while the cache is fresh" "$(grep -c 'bin/omp-termux\|releases/latest' "$CURL_LOG" 2>/dev/null || true)" "0"
-# A cache another copy wrote (install-self, a manual copy, the bootstrap) describes a file that is not this
-# one: trusting its remote hash would report an update that does not exist.
+# A cache another copy wrote (install-self, an upload, a manual copy) describes a file that is not this one:
+# trusting its remote hash would report an update that does not exist.
 sed -i 's/^hash=.*/hash=0/; s/^self=.*/self=0/' "$CACHE"
 : >"$CURL_LOG"
 chk "cache from another copy: no invented hint" "$(dev "file://$R19" status 2>&1 >/dev/null | grep -c 'update available')" "0"
@@ -297,25 +297,27 @@ grep -q "found: $V1" /tmp/vmismatch.log && ok "the error names the version it sc
 chk "no .new left behind" "$(ls "$T/.local/opt/omp-termux/bin" | tr '\n' ' ')" "omp-termux "
 chk "no stray files on the device" "$(find "$T" -type f -not -path '*/.config/*' -not -path '*/.bun/*' -not -path '*/.cache/*' -not -path '*/.local/*' 2>/dev/null | tr '\n' ' ')" ""
 
-echo "== workstation smoke (stubbed ssh/scp standing in for the device)"
+echo "== workstation: the tool manages itself there, and the device verbs refuse"
 TW=/tmp/vws; FSW=/tmp/vwsbin
 case "$TW$FSW" in /tmp/*) ;; *) echo "verify: refusing to touch $TW$FSW" >&2; exit 1 ;; esac
 rm -rf "$TW" "$FSW"
-mkdir -p "$TW/.bun/install/cache/@oh-my-pi/pi-natives@$V0@@@1/native" "$TW/.config" "$FSW"
-pkg_json "$V0" >"$TW/.bun/install/cache/@oh-my-pi/pi-natives@$V0@@@1/package.json"
-printf '#!/bin/sh\nfor a in "$@"; do cmd="$a"; done\nHOME="%s" PATH="%s:$PATH" sh -c "$cmd"\n' "$TW" "$FSW" >"$FSW/ssh"
-printf '#!/bin/sh\nfor a in "$@"; do [ -f "$a" ] && { mkdir -p "%s/.cache/omp-termux"; cp -f "$a" "%s/.cache/omp-termux/"; }; done\nexit 0\n' "$TW" "$TW" >"$FSW/scp"
+mkdir -p "$TW/.config" "$FSW"
 printf '#!/bin/sh\nexit 0\n' >"$FSW/bun"
 chmod +x "$FSW"/*
-ws() { HOME=$TW XDG_CONFIG_HOME=$TW/.config XDG_CACHE_HOME=$TW/.cache OMP_TERMUX_HOST=user@device PATH="$FSW:$PATH" bash "$R/bin/omp-termux" "$@" >/tmp/vws.log 2>&1; }
-for v in help doctor status verify; do ws "$v" && ok "workstation $v exits 0" || no "workstation $v fails"; done
-ws install $V0 && ok "workstation install $V0 exits 0" || { no "workstation install fails"; tail -3 /tmp/vws.log | sed 's|^|       |'; }
-chk "workstation install: addon in place on the device" "$(ls "$TW/.bun/install/cache/@oh-my-pi/pi-natives@$V0@@@1/native" | tr '\n' ' ')" "desktop-adapter.js pi_natives.android-arm64.node "
-ws install-self && ok "workstation install-self exits 0" || no "install-self fails"
-ws install-self >/dev/null 2>&1 && ok "workstation install-self again exits 0" || no "install-self again fails"
+ws() { HOME=$TW XDG_CONFIG_HOME=$TW/.config XDG_CACHE_HOME=$TW/.cache PATH="$FSW:$PATH" bash "$R/bin/omp-termux" "$@" >/tmp/vws.log 2>&1; }
+ws help; chk "workstation help exits 0" "$?" "0"
+ws doctor; chk "workstation doctor exits 0" "$?" "0"
+# install, status and verify act on the pi-natives the machine loads: on a workstation there is none.
+for v in install status verify; do
+	ws "$v"; chk "workstation $v refuses" "$(nonzero $?)" "non0"
+	grep -q 'run it on the Termux device' /tmp/vws.log && ok "workstation $v says where it belongs" ||
+		{ no "workstation $v is silent about the device"; tail -1 /tmp/vws.log | sed 's|^|       |'; }
+done
+ws install-self; chk "workstation install-self exits 0" "$?" "0"
+ws install-self; chk "workstation install-self again exits 0" "$?" "0"
 chk "install-self again: does not re-link an existing link" "$(grep -c 'linked ' /tmp/vws.log)" "0"
 chk "install-self links the tool" "$(readlink "$TW/.local/bin/omp-termux" 2>/dev/null)" "$TW/.local/opt/omp-termux/bin/omp-termux"
-ws uninstall-self && ok "workstation uninstall-self exits 0" || no "uninstall-self fails"
+ws uninstall-self; chk "workstation uninstall-self exits 0" "$?" "0"
 chk "uninstall-self removes everything" "$([ -e "$TW/.local/opt/omp-termux" ] && echo exists || echo gone)" "gone"
 echo "== XDG roots (BUN_INSTALL / XDG_CACHE_HOME / ~/.bun)"
 TX=/tmp/verify-xdg; FX=/tmp/verify-xbin; RX=/tmp/verify-xrel
