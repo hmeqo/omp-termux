@@ -18,4 +18,4 @@ curl -fsSL "$raw/bin/omp-termux" -o "$work/bin/omp-termux" || die "cannot fetch 
 bash -n "$work/bin/omp-termux" || die "the downloaded omp-termux is not valid shell"
 echo "==> omp-termux v$(sed -n 's/^TOOL_VERSION=\([^[:space:]]*\).*/\1/p' "$work/bin/omp-termux" | head -n1) ($(sha256sum "$work/bin/omp-termux" | cut -c1-12))"
 
-OMP_TERMUX_MODE=device bash "$work/bin/omp-termux" install
+bash "$work/bin/omp-termux" install

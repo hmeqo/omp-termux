@@ -51,7 +51,7 @@ jobs:
           rustup --version
           bun --version
           cmake --version | head -1
-          # omp-termux picks the NDK up from ANDROID_NDK_ROOT / _HOME / _LATEST_HOME or the SDK itself.
+          # the build tool picks the NDK up from ANDROID_NDK_ROOT / _HOME / _LATEST_HOME or the SDK itself.
           echo "NDK: ${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_ROOT:-${ANDROID_NDK_HOME:-unset}}}"
 
       - uses: actions/cache@v4
@@ -66,7 +66,7 @@ jobs:
             omp-termux-${{ runner.os }}-
 
       - name: Cross-compile the addon
-        run: ./bin/omp-termux build "$VERSION"
+        run: ./dev/omp-termux-dev build "$VERSION"
 
       # The addon has to match the omp version installed on the device, so every
       # upstream release gets its own release here: tag omp-<version>.

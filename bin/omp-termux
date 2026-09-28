@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# omp-termux — install and manage the @oh-my-pi/pi-natives N-API addon for omp on Android aarch64 / Termux.
+# omp-termux — install and update the @oh-my-pi/pi-natives N-API addon for omp on Android aarch64 / Termux.
 #
 #   omp-termux install [version|file]   bring this device to that version: no argument = the version it runs,
 #                                       "latest" = the newest build published here, or a local .node
 #   omp-termux status                   show the installed pi-natives package(s)
 #   omp-termux verify                   check that the addon loads
-#   omp-termux build [version]          produce the addon (cross-compile on a workstation, natively on a phone)
-#   omp-termux doctor                   check the toolchain (workstation) or the environment (device)
-#   omp-termux install-self             put this tool on PATH (~/.local/opt/omp-termux)
-#   omp-termux uninstall-self           remove it
-#   omp-termux update-self              replace the installed copy with the newest from this repository
+#   omp-termux doctor                   check the environment of this device
+#   omp-termux update-self              replace this tool with the newest from this repository
+#   omp-termux uninstall-self           remove the tool and its cache from this device
 #
-# Environment: OMP_TERMUX_NDK (explicit NDK path; otherwise ANDROID_NDK_ROOT / ANDROID_NDK_HOME / the SDK's
-# newest ndk/* is used), OMP_TERMUX_NO_UPDATE_CHECK (any value = never check for a newer omp-termux),
-# OMP_TERMUX_UPDATE_TTL (seconds between checks, default 86400).
-# Layout: bin/omp-termux (this file), out/ (artifacts), work/ (clone, cargo target, caches; gitignored).
+# Every verb here acts on the pi-natives this machine loads, so the tool runs on the device; building the
+# addon is the developer half of this repository (dev/omp-termux-dev).
+# Environment: OMP_TERMUX_REPO, OMP_TERMUX_RELEASE_BASE and OMP_TERMUX_RAW_BASE (point the tool at another
+# repository), OMP_TERMUX_VERSION (the version an argument-less install targets), OMP_TERMUX_NO_UPDATE_CHECK
+# (any value = never check for a newer omp-termux), OMP_TERMUX_UPDATE_TTL (seconds between checks, default
+# 86400).
 set -Eeuo pipefail
 # An unexpected non-zero (usually a pipeline element under `pipefail`) would otherwise abort with no
 # message at all; name the line and the command instead.
@@ -25,34 +25,16 @@ PREFIX="$HOME/.local/opt/omp-termux"
 BINDIR="$HOME/.local/bin"
 [ -n "$TERMUX_PREFIX" ] && BINDIR="$TERMUX_PREFIX/bin"   # Termux: that dir is already on PATH
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
-SELF_DIR="$(cd "$(dirname "$SELF")" && pwd)"
-PROJ="$(dirname "$SELF_DIR")"          # this file lives in <project>/bin/
 SCRATCH=".cache/omp-termux"             # scratch dir on the device; removed after every run
-WORK="$PROJ/work"
-OUT="$PROJ/out"
-SRC="$WORK/src"
-NAPI_CLI_DIR="$WORK/napi-cli"
-OPUS_PREFIX="$WORK/opus-24-arm64"
-CARGO_TARGET="${CARGO_TARGET_DIR:-$WORK/cargo-target}"
 ADDON="pi_natives.android-arm64.node"
-API=24
-UPSTREAM="https://github.com/can1357/oh-my-pi.git"
-UPSTREAM_REPO="${UPSTREAM#https://github.com/}"    # owner/repo, for the release and patch URLs
-UPSTREAM_REPO="${UPSTREAM_REPO%.git}"
-PR=6350
-PR_PATCH_URL="https://patch-diff.githubusercontent.com/raw/$UPSTREAM_REPO/pull/${PR}.diff"
+UPSTREAM_REPO="can1357/oh-my-pi"        # upstream project: its newest release has no build here until we build one
 REPO="${OMP_TERMUX_REPO:-hmeqo/omp-termux}"
-TOOL_VERSION=0.1.0                      # a label only: every comparison reads the content hash
+TOOL_VERSION=0.2.0                      # a label only: every comparison reads the content hash
+PROG="omp-termux"                        # names this script in hints; dev/omp-termux-dev overrides it
 SELF_URL="${OMP_TERMUX_RAW_BASE:-https://raw.githubusercontent.com/$REPO/main}/bin/omp-termux"
 SELF_CACHE="$PREFIX/cache/self-update"  # under $PREFIX, so uninstall-self removes it too
 SELF_TTL="${OMP_TERMUX_UPDATE_TTL:-86400}"
 case "$SELF_TTL" in '' | *[!0-9]*) SELF_TTL=86400 ;; esac
-
-if [ -n "${TERMUX_VERSION:-}" ] || [ -d /data/data/com.termux/files/usr ]; then
-	MODE="${OMP_TERMUX_MODE:-device}"
-else
-	MODE="${OMP_TERMUX_MODE:-workstation}"
-fi
 
 # --- reporting and small helpers ------------------------------------------------------------------
 msg()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
@@ -98,36 +80,15 @@ version_gt() { [ "$1" != "$2" ] && version_ge "$1" "$2"; }
 
 version_lt() { [ "$1" != "$2" ] && [ "$1" = "$(version_min "$1" "$2")" ]; }
 
-usage() { sed -n '4,12p' "$SELF" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '4,10p' "$SELF" | sed 's/^# \{0,1\}//'; }
 
 reject_option() { # $1 = the argument to check; option-looking arguments are always a mistake here
 	case "${1:-}" in
-		-*) die "unexpected option: $1 (run 'omp-termux help')" ;;
+		-*) die "unexpected option: $1 (run '$PROG help')" ;;
 	esac
 }
 
-# --- environment: the NDK, bun and omp ------------------------------------------------------------
-# The NDK is the system's business: use whatever the SDK, a package manager or the
-# environment already provides instead of shipping a private copy.
-detect_ndk() {
-	local c root
-	for c in "${OMP_TERMUX_NDK:-}" "${ANDROID_NDK_ROOT:-}" "${ANDROID_NDK_HOME:-}" "${ANDROID_NDK_LATEST_HOME:-}"; do
-		[ -n "$c" ] && [ -d "$c/toolchains/llvm/prebuilt" ] && { printf '%s\n' "${c%/}"; return 0; }
-	done
-	for root in "${ANDROID_HOME:-}" "$HOME/Android/Sdk" "$HOME/.local/share/Android/Sdk" /opt/android-sdk; do
-		[ -n "$root" ] && [ -d "$root/ndk" ] || continue
-		c="$(ls -d "$root"/ndk/*/ 2>/dev/null | sort -V | tail -n1)"
-		[ -n "$c" ] && { printf '%s\n' "${c%/}"; return 0; }
-	done
-	for c in /opt/android-ndk "$HOME/.local/share/android-ndk"; do
-		[ -d "$c/toolchains/llvm/prebuilt" ] && { printf '%s\n' "$c"; return 0; }
-	done
-	return 1
-}
-
-NDK="$(detect_ndk || true)"
-
-ndk_ok() { [ -n "$NDK" ] && [ -d "$NDK/toolchains/llvm/prebuilt/linux-x86_64" ]; }
+# --- environment: bun and omp ---------------------------------------------------------------------
 
 bun_root() { # bun's own rule: BUN_INSTALL wins, XDG_CACHE_HOME moves the default, else ~/.bun
 	if [ -n "${BUN_INSTALL:-}" ]; then
@@ -311,13 +272,9 @@ link_self() { # $PREFIX/bin/omp-termux linked into $BINDIR; quiet while the link
 tool_label() { printf 'v%s (%s)' "$TOOL_VERSION" "$(file_sha "$SELF" | cut -c1-12)"; }
 
 cmd_install_self() { # keep this tool on PATH: $PREFIX, linked into $BINDIR
-	local f
-	mkdir -p "$PREFIX/bin" "$PREFIX/patches"
+	mkdir -p "$PREFIX/bin"
 	# Running the installed copy is the normal case on a device: copying it onto itself would fail.
 	[ "$SELF" = "$PREFIX/bin/omp-termux" ] || install -m 0755 "$SELF" "$PREFIX/bin/omp-termux"
-	for f in "$PROJ"/patches/*.patch "$SELF_DIR"/patches/*.patch; do
-		[ -f "$f" ] && cp -f "$f" "$PREFIX/patches/"
-	done
 	link_self
 }
 
@@ -361,7 +318,7 @@ check_self_update() { # one line on stderr when main holds a different copy; nev
 	codef="$tmp/omp-termux.code.$$"
 	cur="$(file_sha "$SELF")"
 	# The cached remote hash is only comparable to the copy that fetched it: once anything else replaced this
-	# file (install-self, the curl bootstrap, a manual copy) it would be compared against the wrong one.
+	# file (the installer, a manual copy) it would be compared against the wrong one.
 	at="$(cache_get checked_at)"
 	[ "$(cache_get self)" = "$cur" ] || at=""
 	if [ -z "$at" ] || [ "$((now - at))" -ge "$SELF_TTL" ]; then
@@ -425,29 +382,22 @@ cmd_update_self() {
 # --- install: on the device -----------------------------------------------------------------------
 # Copies the patched adapter next to the addon: on Android the addon exports no DesktopSession, and the
 # package entrypoint calls adaptDesktopSession() at load time.
-copy_adapter() { # $1 = package's native dir, $2 = dir holding the artifact (may carry its own adapter)
-	local native_dir="$1" artifact_dir="$2" src
-	for src in "$SRC/packages/natives/native" "$artifact_dir"; do
-		if [ -f "$src/desktop-adapter.js" ]; then
-			cp -f "$src/desktop-adapter.js" "$native_dir/desktop-adapter.js"
-			return 0
-		fi
-	done
-	warn "no desktop-adapter.js found: DesktopSession will be a broken adapter class"
+copy_adapter() { # $1 = package's native dir, $2 = dir holding the artifact (carries its own adapter)
+	local native_dir="$1" artifact_dir="$2"
+	if [ -f "$artifact_dir/desktop-adapter.js" ]; then
+		cp -f "$artifact_dir/desktop-adapter.js" "$native_dir/desktop-adapter.js"
+		return 0
+	fi
+	warn "no desktop-adapter.js next to the artifact: DesktopSession will be a broken adapter class"
 }
 
 install_addon() { # $1 = path to a .node
 	local addon="$1" target_version="" n=0 seen="" d v artifact_dir
 	[ -f "$addon" ] || die "no artifact to install: $addon"
 	artifact_dir="$(cd "$(dirname "$addon")" && pwd)"
-	# What the artifact reports is what the loader checks, so it decides the target version; a build tree is
-	# only a fallback when the artifact reports no release.
+	# What the artifact reports is what the loader checks, so it decides the target version.
 	target_version="$(artifact_version "$addon")"
-	if [ -n "$target_version" ]; then
-		msg "target version from the artifact: $target_version"
-	elif [ -f "$SRC/packages/natives/package.json" ]; then
-		target_version="$(json_version "$SRC/packages/natives/package.json")"
-	fi
+	[ -n "$target_version" ] && msg "target version from the artifact: $target_version"
 	while IFS= read -r d; do
 		v="$(json_version "$d/package.json")"
 		if [ -n "$target_version" ] && [ "$v" != "$target_version" ]; then
@@ -462,7 +412,7 @@ install_addon() { # $1 = path to a .node
 		msg "installed -> $d/native/$ADDON$(is_workspace_load "$d" && echo ' [workspace-load: release check skipped]' || echo ' [node_modules: release must match]')"
 		n=$((n + 1))
 	done < <(natives_dirs)
-	[ "$n" -gt 0 ] || die "no @oh-my-pi/pi-natives for ${target_version:-the artifact} on this device${seen:+ (found: $seen)}; install omp first: bun install -g @oh-my-pi/pi-coding-agent"
+	[ "$n" -gt 0 ] || die "no @oh-my-pi/pi-natives for ${target_version:-the artifact} on this device${seen:+ (found: $seen)}; 'omp-termux install latest' provisions omp here"
 }
 
 link_global_tree() { # On Termux, `bun install -g` (upstream's documented way) leaves <root>/bin/omp resolving
@@ -660,6 +610,7 @@ if (absent.length) console.log(`  platform-trimmed modules (expected on Android)
 if (missing.length) { console.error("  missing:", missing.join(", ")); process.exit(1) }
 console.log("  NATIVE LOAD OK")
 EOF
+	[ -n "$(natives_dirs)" ] || die "no @oh-my-pi/pi-natives on this machine; nothing to verify"
 	while IFS= read -r d; do
 		msg "loading through the loader: $d"
 		[ -n "$bun_bin" ] || { warn "bun not found (looked for 'bun' on PATH and under $(bun_root)); cannot load-test $d"; rc=1; continue; }
@@ -687,7 +638,6 @@ EOF
 print_status() {
 	local d v f omp_bin rel
 	omp_bin="$(omp_path)"
-	printf 'mode       : %s\n' "$MODE"
 	printf 'tool       : %s\n' "$SELF"
 	printf 'version    : %s\n' "$(tool_label)"
 	rel="$(cache_get release)"       # filled by the self-update check: status makes no request itself
@@ -703,19 +653,7 @@ print_status() {
 	done < <(natives_dirs)
 }
 
-# --- upstream source, patch and dependencies ------------------------------------------------------
-vendored_patch() {
-	local candidate
-	for candidate in "$PROJ"/patches/*.patch "$SELF_DIR"/patches/*.patch "$PREFIX"/patches/*.patch; do
-		[ -f "$candidate" ] || continue
-		# stale after a PR bump: only a file naming the current PR may be applied
-		grep -q "/pull/$PR" "$candidate" 2>/dev/null || continue
-		printf '%s\n' "$candidate"; return 0
-	done
-	return 1
-}
-
-PATCH="$(vendored_patch || printf '%s' "$WORK/upstream-${PR}.diff")"
+# --- version lookups ------------------------------------------------------------------------------
 
 github_latest_tag() { # $1 = owner/repo, $2 = tag prefix to strip; "" when the lookup fails
 	# the redirect costs no quota, unlike api.github.com (60 requests per hour per IP, shared on mobile NAT)
@@ -727,246 +665,6 @@ latest_version() { github_latest_tag "$UPSTREAM_REPO" v; }           # newest up
 
 latest_release_version() { github_latest_tag "$REPO" 'omp-'; }       # newest release this repository publishes
 
-fetch_source() { # $1 = version
-	local ref="v$1"
-	mkdir -p "$WORK"
-	if [ ! -d "$SRC/.git" ]; then
-		msg "cloning upstream $ref"
-		rm -rf "$SRC"
-		git clone --depth 1 --single-branch --branch "$ref" "$UPSTREAM" "$SRC" ||
-			die "clone failed: does tag '$ref' exist?"
-	else
-		msg "updating upstream -> $ref"
-		git -C "$SRC" fetch --depth 1 origin "$ref" || die "fetch '$ref' failed"
-		git -C "$SRC" checkout -f FETCH_HEAD
-		git -C "$SRC" reset --hard FETCH_HEAD >/dev/null
-	fi
-	printf '%s\n' "$ref" >"$WORK/source-ref"
-}
-
-apply_patch() {
-	local marker="$SRC/packages/natives/scripts/build-bindings.ts"
-	[ -f "$marker" ] || die "source tree looks wrong: $marker missing"
-	if grep -q 'RUSTC_BOOTSTRAP' "$marker" 2>/dev/null; then
-		msg "patch already present in the source tree (upstream may have merged it), skipping"
-		return
-	fi
-	if [ ! -f "$PATCH" ]; then
-		msg "downloading upstream patch (PR #$PR)"
-		curl -fsSL "$PR_PATCH_URL" -o "$PATCH" || die "patch download failed: $PR_PATCH_URL"
-	fi
-	msg "applying $(basename "$PATCH")"
-	git -C "$SRC" apply --exclude='*CHANGELOG.md' "$PATCH" ||
-		die "patch did not apply — upstream changed those files. Patch kept at $PATCH"
-	grep -q 'RUSTC_BOOTSTRAP' "$marker" || die "patch applied but had no effect"
-}
-
-install_build_deps() {
-	local napi_version
-	napi_version="$(sed -n 's/.*"@napi-rs\/cli"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$SRC/package.json" | head -n1)"
-	[ -n "$napi_version" ] || die "cannot read @napi-rs/cli version from $SRC/package.json"
-	if [ -d "$SRC/packages/natives/node_modules/@napi-rs/cli" ]; then
-		msg "@napi-rs/cli already available"
-		return
-	fi
-	if [ -e "$SRC/packages/natives/node_modules" ]; then
-		msg "installing @napi-rs/cli@$napi_version into the existing source node_modules"
-		(cd "$SRC/packages/natives" && bun add --ignore-scripts "@napi-rs/cli@$napi_version") || die "bun add failed"
-		return
-	fi
-	# A plain `bun install` in packages/natives resolves the whole monorepo (~400 packages, ~1.5 GB);
-	# installing the CLI standalone and symlinking costs ~67 packages / ~56 MB instead.
-	msg "installing @napi-rs/cli@$napi_version standalone"
-	mkdir -p "$NAPI_CLI_DIR"
-	[ -f "$NAPI_CLI_DIR/package.json" ] || echo '{}' >"$NAPI_CLI_DIR/package.json"
-	(cd "$NAPI_CLI_DIR" && bun add --ignore-scripts "@napi-rs/cli@$napi_version") || die "bun add failed"
-	ln -sfn "$NAPI_CLI_DIR/node_modules" "$SRC/packages/natives/node_modules"
-	[ -d "$SRC/packages/natives/node_modules/@napi-rs/cli" ] || die "@napi-rs/cli still unresolvable after linking"
-}
-
-# --- build: on the device (native) ----------------------------------------------------------------
-device_build() { # $1 = version (default: the one installed on this device)
-	local version="${1:-$(installed_version)}" ref src_version
-	version="${version#v}"
-	[ -n "$version" ] || die "no installed @oh-my-pi/pi-natives; install omp first: bun install -g @oh-my-pi/pi-coding-agent"
-	msg "building on device (profile=ci) — expect hours; run it inside tmux"
-	fetch_source "$version"
-	src_version="$(json_version "$SRC/packages/natives/package.json")"
-	[ "$src_version" = "$version" ] ||
-		warn "source version $src_version != installed version $version (usually still fine: the loader skips the release check for Bun's cache layout)"
-	apply_patch
-	install_build_deps
-	have termux-wake-lock && { termux-wake-lock; trap 'termux-wake-unlock >/dev/null 2>&1 || true' EXIT; }
-	export OMP_NATIVE_CARGO_PROFILE=ci
-	export RUSTC_BOOTSTRAP="${RUSTC_BOOTSTRAP:-xutf,pi_natives}"
-	export CARGO_TARGET_DIR="$CARGO_TARGET"
-	(cd "$SRC/packages/natives" && bun scripts/build-bindings.ts) || die "build failed (see the output above)"
-	local built="$SRC/packages/natives/native/$ADDON"
-	if [ ! -f "$built" ]; then
-		built="$(find "$SRC/packages/natives/native" -maxdepth 1 -name 'pi_natives*.node' | head -n1)"
-		[ -n "$built" ] || die "build finished but produced no addon"
-		mv "$built" "$SRC/packages/natives/native/$ADDON"
-		built="$SRC/packages/natives/native/$ADDON"
-	fi
-	mkdir -p "$WORK"
-	cp -f "$built" "$WORK/$ADDON"
-	msg "artifact $WORK/$ADDON ($(du -h "$WORK/$ADDON" | cut -f1))"
-}
-
-# --- build: on the workstation (cross-compile) ----------------------------------------------------
-ensure_rust_target() {
-	local channel
-	channel="$(sed -n 's/^channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$SRC/rust-toolchain.toml" 2>/dev/null | head -n1 || true)"
-	[ -n "$channel" ] || die "cannot read the pinned channel from $SRC/rust-toolchain.toml"
-	msg "upstream pins rust toolchain: $channel"
-	if rustup target list --installed --toolchain "$channel" 2>/dev/null | grep -qx aarch64-linux-android; then
-		msg "aarch64-linux-android std already installed"
-	else
-		msg "installing aarch64-linux-android std for $channel"
-		rustup target add aarch64-linux-android --toolchain "$channel" || die "rustup target add failed"
-	fi
-}
-
-prepare_opus() {
-	local base src dir
-	# audiopus_sys declares no rerun-if-env-changed, so Cargo reuses the rlib left by an earlier
-	# (host-ABI) cmake run. Remove the build directory on every call.
-	rm -rf "$CARGO_TARGET/aarch64-linux-android/ci/build/audiopus_sys"
-	if [ -f "$OPUS_PREFIX/lib/libopus.a" ]; then
-		msg "opus already built: $OPUS_PREFIX"
-		return
-	fi
-	msg "fetching crate sources (cargo fetch)"
-	(cd "$SRC" && cargo fetch --manifest-path crates/pi-natives/Cargo.toml >/dev/null 2>&1) || warn "cargo fetch failed; continuing"
-	src=""
-	for base in "${CARGO_HOME:-}" "$HOME/.cargo" "$HOME/.local/share/cargo"; do
-		[ -n "$base" ] || continue
-		dir="$(ls -d "$base"/registry/src/*/audiopus_sys-*/opus 2>/dev/null | head -n1 || true)"
-		[ -n "$dir" ] && { src="$dir"; break; }
-	done
-	[ -n "$src" ] || die "cannot locate the vendored opus sources inside audiopus_sys"
-	msg "cross-building opus for arm64-v8a (API $API)"
-	rm -rf "$WORK/opus-build" "$OPUS_PREFIX"
-	# -DCMAKE_POLICY_VERSION_MINIMUM: opus' CMakeLists predates CMake 4.
-	cmake -S "$src" -B "$WORK/opus-build" -G Ninja \
-		-DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-		-DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
-		-DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM="android-$API" \
-		-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
-		-DOPUS_BUILD_PROGRAMS=OFF -DOPUS_BUILD_TESTING=OFF -DOPUS_BUILD_SHARED_LIBRARY=OFF \
-		-DCMAKE_INSTALL_PREFIX="$OPUS_PREFIX" >"$WORK/opus.log" 2>&1 ||
-		die "opus cmake configure failed, see $WORK/opus.log"
-	cmake --build "$WORK/opus-build" -j "$(nproc)" >>"$WORK/opus.log" 2>&1 || die "opus build failed, see $WORK/opus.log"
-	cmake --install "$WORK/opus-build" >>"$WORK/opus.log" 2>&1 || die "opus install failed"
-	[ -f "$OPUS_PREFIX/lib/libopus.a" ] || die "opus installed but libopus.a is missing"
-	msg "opus ready ($(du -h "$OPUS_PREFIX/lib/libopus.a" | cut -f1))"
-}
-
-cross_build() {
-	local tc="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
-	ndk_ok || die "NDK incomplete, run 'omp-termux doctor' first"
-	mkdir -p "$OUT"
-	rm -f "$OUT/$ADDON"
-	msg "cross-compiling aarch64-linux-android (API $API)"
-	(
-		cd "$SRC/packages/natives"
-		env \
-			ANDROID_NDK_LATEST_HOME="$NDK" \
-			ANDROID_NDK_HOME="$NDK" \
-			ANDROID_NDK_ROOT="$NDK" \
-			LIBOPUS_LIB_DIR="$OPUS_PREFIX" \
-			LIBOPUS_STATIC=1 \
-			LIBOPUS_NO_PKG=1 \
-			BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$tc/sysroot --target=aarch64-linux-android$API" \
-			RUSTC_BOOTSTRAP="${RUSTC_BOOTSTRAP:-xutf,pi_natives}" \
-			CARGO_TARGET_DIR="$CARGO_TARGET" \
-			bun "$NAPI_CLI_DIR/node_modules/@napi-rs/cli/dist/cli.js" build \
-			--manifest-path "$SRC/crates/pi-natives/Cargo.toml" \
-			--package-json-path "$SRC/packages/natives/package.json" \
-			--target aarch64-linux-android \
-			--no-js --dts index.d.ts \
-			-o "$OUT" --profile ci
-	) || die "cross-compilation failed"
-	finalize_artifact
-}
-
-# The loader rejects an addon whose __piNativesBuildVersion() is not the installed package version, and current
-# release sources leave that 64-byte slot empty: upstream's build-bindings.ts wrapper writes it after linking.
-# This path drives the napi CLI directly, so it has to run upstream's stamp tool itself. Releases before the
-# slot have no tool and no slot; their per-release napi name is the identity instead.
-stamp_artifact() {
-	local addon="$OUT/$ADDON" tool="$SRC/scripts/stamp-native-version.ts"
-	[ -f "$tool" ] || return 0
-	msg "stamping the release into $(basename "$addon")"
-	bun "$tool" "$addon" >/dev/null || die "stamping $addon failed"
-}
-
-# The loader looks for pi_natives.<platform>-<arch>.node, while @napi-rs/cli --target emits a bare name.
-# The script itself ships in out/ because install.sh fetches it alongside the addon.
-finalize_artifact() {
-	local produced
-	if [ ! -f "$OUT/$ADDON" ]; then
-		produced="$(find "$OUT" -maxdepth 1 -name 'pi_natives*.node' | head -n1)"
-		[ -n "$produced" ] || die "build finished but produced no addon"
-		msg "renaming $(basename "$produced") -> $ADDON"
-		mv "$produced" "$OUT/$ADDON"
-	fi
-	stamp_artifact
-	cp -f "$SRC/packages/natives/native/desktop-adapter.js" "$OUT/desktop-adapter.js"
-	cp -f "$SELF" "$OUT/omp-termux" && chmod +x "$OUT/omp-termux"
-}
-
-verify_artifact() { # $1 = the version the artifact must report (optional)
-	local addon="$OUT/$ADDON" info reported="${1:-}"
-	[ -f "$addon" ] || die "artifact missing: $addon"
-	msg "verifying $addon"
-	info="$(file -b "$addon")"
-	echo "  $info"
-	case "$info" in
-		*"ARM aarch64"*) ;;
-		*) die "artifact is not aarch64: $info" ;;
-	esac
-	have readelf || die "readelf is required to verify the artifact"
-	# `file`'s wording for the NDK note depends on its own version, so read the note itself.
-	if readelf -n "$addon" 2>/dev/null | grep -q '\.note\.android\.ident'; then
-		msg "artifact carries the NDK Android note"
-	else
-		die "artifact has no .note.android.ident — it was not linked as an Android object"
-	fi
-	readelf -d "$addon" 2>/dev/null | grep NEEDED || true
-	if readelf -V "$addon" 2>/dev/null | grep -q 'GLIBC_'; then
-		die "artifact carries GLIBC_* version requirements — not a bionic object"
-	fi
-	if readelf -d "$addon" 2>/dev/null | grep -qE 'libc\.so\.6|ld-linux'; then
-		die "artifact links glibc — it will not run on the device"
-	fi
-	msg "dynamic deps are bionic-only (libc.so / libdl.so / libm.so)"
-	nm -D --defined-only "$addon" 2>/dev/null | grep -q napi_register_module_v1 &&
-		msg "N-API entrypoint napi_register_module_v1 present"
-	reported="$(artifact_version "$addon")"
-	[ -n "$reported" ] || die "the artifact reports no release — the loader would reject it (unstamped slot)"
-	if [ -n "${1:-}" ] && [ "$reported" != "$1" ]; then
-		die "the artifact reports $reported, not the requested $1"
-	fi
-	msg "artifact reports release $reported (the loader compares it with @oh-my-pi/pi-natives' version)"
-	du -h "$addon" | sed 's/^/  size /'
-}
-
-workstation_build() { # $1 = version
-	local version="${1:-$(latest_version)}"
-	version="${version#v}"
-	[ -n "$version" ] || die "no version given and the upstream release lookup failed: omp-termux build <version>"
-	msg "target omp version: $version"
-	ndk_ok || die "NDK missing — run 'omp-termux doctor' and install it"
-	fetch_source "$version"
-	ensure_rust_target
-	apply_patch
-	install_build_deps
-	prepare_opus
-	cross_build
-	verify_artifact "$version"
-	msg "artifact for $version is in $OUT"
-}
 
 # --- doctor ---------------------------------------------------------------------------------------
 device_doctor() {
@@ -979,65 +677,39 @@ device_doctor() {
 	printf '  tool           : %s\n' "$SELF"
 	printf '  omp-termux     : %s\n' "$(tool_label)"
 	printf '  bun            : %s\n' "${bun_bin:-MISSING}"
-	printf '  rustc / cargo  : %s / %s\n' "$(have rustc && rustc -vV | sed -n 's/^release: /release=/p' || echo 'MISSING (only needed for omp-termux build)')" "$(have cargo && cargo --version || echo MISSING)"
 	printf '  omp binary     : %s\n' "${omp_bin:-not found}"
 	printf '  pi-natives     : %s\n' "$(installed_version || echo 'not found')"
 	printf '  free space     : %s\n' "$(df -h "$HOME" 2>/dev/null | awk 'NR==2{print $4}')"
-	[ -n "$bun_bin" ] || warn "bun is missing: pkg install bun (or curl -fsSL https://bun.sh/install | bash)"
+	[ -n "$bun_bin" ] || warn "bun is missing: 'omp-termux install latest' installs it together with omp"
 }
 
-workstation_doctor() {
-	msg "cross toolchain check"
-	printf '  mode           : %s\n' "$MODE"
-	printf '  omp-termux     : %s\n' "$(tool_label)"
-	printf '  NDK            : %s%s\n' "${NDK:-<none>}" "$(ndk_ok && echo ' ok' || echo ' MISSING')"
-	printf '  rustup         : %s\n' "$(have rustup && rustup --version 2>/dev/null | head -n1 || echo 'MISSING (required)')"
-	printf '  cargo / bun    : %s / %s\n' "$(have cargo && cargo --version || echo MISSING)" "$(have bun && bun --version || echo MISSING)"
-	printf '  git/curl/unzip : %s %s %s\n' "$(have git && echo ok || echo no)" "$(have curl && echo ok || echo no)" "$(have unzip && echo ok || echo no)"
-	printf '  cmake / ninja  : %s / %s\n' "$(have cmake && cmake --version | head -n1 || echo 'MISSING (needed for opus)')" "$(have ninja && ninja --version || echo MISSING)"
-	printf '  patch          : %s\n' "$PATCH"
-	if ! ndk_ok; then
-		warn "no NDK found. Install one the usual way, then re-run:"
-		printf '  sdkmanager "ndk;<version>"           # Android Studio SDK (uses ANDROID_HOME)\n'
-		printf '  paru -S android-ndk                  # or the distro package\n'
-		printf '  export ANDROID_NDK_ROOT=/path/to/ndk # if it lives somewhere else\n'
-		return 1
-	fi
-	msg "ok"
-}
 
 # --- dispatch -----------------------------------------------------------------------------------------
 
-# install, status and verify act on the @oh-my-pi/pi-natives of the machine that runs them, which on a
-# workstation is nobody's: the workstation only builds. die never returns, so the verb stops here.
-device_only() { # $1 = the verb
-	die "'$1' acts on the pi-natives this machine loads — run it on the Termux device. There: 'omp-termux install latest'; from a build: copy out/$ADDON into @oh-my-pi/pi-natives/native/ next to the omp you run."
+main() {
+	# every verb except help and update-self: at most one hint on stderr, never a different exit code
+	case "${1:-help}" in
+		help | -h | --help | update-self) ;;
+		*) check_self_update || true ;;
+	esac
+	case "${1:-help}" in
+		install)
+			shift
+			reject_option "${1:-}"
+			device_install "${1:-}"
+			;;
+		status) print_status ;;
+		verify) run_verify ;;
+		doctor) device_doctor ;;
+		update-self) cmd_update_self ;;
+		uninstall-self) cmd_uninstall_self ;;
+		help | -h | --help) usage ;;
+		*) warn "unknown verb: ${1:-}"; usage; exit 1 ;;
+	esac
 }
 
-# every verb except help and update-self: at most one hint on stderr, never a different exit code
-case "${1:-help}" in
-	help | -h | --help | update-self) ;;
-	*) check_self_update || true ;;
-esac
-
-case "${1:-help}" in
-	doctor) if [ "$MODE" = device ]; then device_doctor; else workstation_doctor; fi ;;
-	status) [ "$MODE" = device ] || device_only status; print_status ;;
-	verify) [ "$MODE" = device ] || device_only verify; run_verify ;;
-	install)
-		shift
-		reject_option "${1:-}"
-		[ "$MODE" = device ] || device_only install
-		device_install "${1:-}"
-		;;
-	build)
-		shift
-		reject_option "${1:-}"
-		if [ "$MODE" = device ]; then device_build "${1:-}"; else workstation_build "${1:-}"; fi
-		;;
-	install-self) cmd_install_self ;;
-	update-self) cmd_update_self ;;
-	uninstall-self) cmd_uninstall_self ;;
-	help | -h | --help) usage ;;
-	*) warn "unknown verb: ${1:-}"; usage; exit 1 ;;
-esac
+# dev/omp-termux-dev sources this file for $ADDON, $UPSTREAM_REPO and the helpers both halves use;
+# only an executed copy runs a verb (an `if`, not `[ ] &&`: sourcing must not report failure under `set -e`).
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+	main "$@"
+fi

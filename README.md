@@ -16,9 +16,9 @@ One command:
 curl -fsSL https://raw.githubusercontent.com/hmeqo/omp-termux/main/install.sh | sh
 ```
 
-Needs Android 7+ (API 24), aarch64 and `curl` (`unzip` only when `pkg install bun` fails). The script installs
-a missing `bun` and omp — the newest build published here — then puts the matching addon in the `native/`
-directory of the package `omp` uses. Start `omp`: a successful start means the addon is in place.
+Needs Android 7+ (API 24), aarch64 and `curl`. The script installs a missing `bun` and omp — the newest build
+published here — then puts the matching addon in the `native/` directory of the package `omp` uses. Start `omp`:
+a successful start means the addon is in place. Later, `omp-termux install latest` keeps both in step.
 
 ### Keep it in step
 
@@ -29,21 +29,29 @@ omp-termux update-self      # replace omp-termux itself
 
 ### Build it yourself
 
-On a workstation, with the [development tools](#development):
+From a checkout of this repository, on a workstation with the [development tools](#development):
 
 ```sh
-./bin/omp-termux build 18.3.4   # cross-compiles out/pi_natives.android-arm64.node
+./dev/omp-termux-dev build 18.3.4   # cross-compiles out/pi_natives.android-arm64.node
 ```
 
-Copy `out/pi_natives.android-arm64.node` and `out/desktop-adapter.js` into the `native/` directory of the
-`@oh-my-pi/pi-natives` package on the device. `omp-termux build` on the device does the same natively (hours,
-inside `tmux`); without a version both build the newest upstream release.
+This is the maintainer's half of the repository: it produces the addon and, with the phone reachable over ssh,
+puts it on the device and verifies it there. The same script builds natively on the device (hours, inside
+`tmux`); without a version both build the newest upstream release.
+
+```sh
+./dev/omp-termux-dev device user@host     # save the target (~/.config/omp-termux/config)
+./dev/omp-termux-dev install 18.3.4       # build when needed, upload, install and verify there
+./dev/omp-termux-dev status               # what the device runs
+```
 
 ## Development
 
-Building from source needs a workstation (tested on Linux x86_64) with `rustup`, `bun` ≥ 1.3.14, an Android NDK
-(taken from `OMP_TERMUX_NDK`, `ANDROID_NDK_ROOT`, `ANDROID_NDK_HOME` or your SDK's newest `ndk/*`), `cmake`,
-`ninja`, `git`, `curl` and `unzip`. `omp-termux doctor` names whatever is missing.
+`bin/omp-termux` is the device tool; `dev/omp-termux-dev` is the build half, and sources it for the names and
+helpers both share. Building from source needs a workstation (tested on Linux x86_64) with `rustup`,
+`bun` ≥ 1.3.14, an Android NDK (taken from `OMP_TERMUX_NDK`, `ANDROID_NDK_ROOT`, `ANDROID_NDK_HOME` or your SDK's
+newest `ndk/*`), `cmake`, `ninja`, `git`, `curl` and `unzip`. `./dev/omp-termux-dev doctor` names whatever is
+missing.
 
 ## Commands
 
@@ -51,10 +59,11 @@ Building from source needs a workstation (tested on Linux x86_64) with `rustup`,
 |---|---|
 | `omp-termux install [version\|file]` | bring this device to that version and install the addon (`latest` = the newest build this repository publishes, default = the version it runs); skips the download when it is already there, builds only when needed, and provisions a bare device |
 | `omp-termux status` / `verify` | show what is installed / check that the addon loads |
-| `omp-termux build [version]` | produce the addon only (cross-compile on a workstation, natively on the device) |
 | `omp-termux update-self` | replace the installed `omp-termux` with the newest from this repository |
-| `omp-termux install-self` / `uninstall-self` | optional: keep this tool on PATH (`~/.local/opt/omp-termux`, `~/.local/bin/omp-termux`), or remove it |
-| `omp-termux doctor` | check the cross toolchain (workstation) or the environment (device) |
+| `omp-termux uninstall-self` | remove the tool and its cache from this device |
+| `omp-termux doctor` | check the environment of this device |
+
+Building is the other half and has its own list: `./dev/omp-termux-dev help` (`build`, `doctor`).
 
 ## Notes
 
@@ -62,7 +71,8 @@ Building from source needs a workstation (tested on Linux x86_64) with `rustup`,
 * `omp-termux` prints one line to stderr when a newer copy of itself is on `main`;
   `OMP_TERMUX_NO_UPDATE_CHECK=1` turns that check off and `OMP_TERMUX_UPDATE_TTL` (seconds, default 86400)
   sets how often it runs.
-* The device keeps the addon and `omp-termux`; `omp-termux uninstall-self` removes the tool and leaves omp alone.
+* The device keeps the addon and `omp-termux`: installing puts the tool on PATH, and `omp-termux uninstall-self`
+  removes it while leaving omp alone.
 * Restart `omp` after installing: a running one keeps using the old addon.
 * On Termux the screen scrolls from the top when the software keyboard opens;
   `omp config set tui.resizeScrollback preserve` avoids it.
