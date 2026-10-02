@@ -220,5 +220,6 @@ OMP_TERMUX_MODE=device ./dev/omp-termux-dev build   # native build on the phone:
   scratch dir is gone afterwards, and `status` asks the device rather than acting locally.
 - Not verifiable without real hardware: bun's global layout behaviour on Android (the `link_global_tree` repair),
   the NDK cross-build, the real ssh transport, and anything touching `pkg`/`termux-*`.
-- Doc statements are the user-visible contract — `README.md`'s Notes/Limitations must stay true (device keeps
-  the addon and the tool; `uninstall-self` removes only the tool; arm64-v8a only; API 24 / Android 7+).
+- Doc statements are the user-visible contract — `README.md` must stay true: the install prose and the command
+  table carry the addon-must-match and tool-on-PATH facts plus `uninstall-self` leaving omp alone, the
+  limitations keep arm64-v8a only and API 24 / Android 7+, and the notes keep the Termux viewport behaviour.

@@ -17,8 +17,9 @@ curl -fsSL https://raw.githubusercontent.com/hmeqo/omp-termux/main/install.sh | 
 ```
 
 Needs Android 7+ (API 24), aarch64 and `curl`. The script installs a missing `bun` and omp — the newest build
-published here — then puts the matching addon in the `native/` directory of the package `omp` uses. Start `omp`:
-a successful start means the addon is in place. Later, `omp-termux install latest` keeps both in step.
+published here — then puts the addon matching your `@oh-my-pi/pi-natives` into the `native/` directory of the
+package `omp` uses, and leaves `omp-termux` on your PATH. Start `omp`, or restart it if it was already running:
+a successful start means the addon is in place. Later, `omp-termux install latest` keeps the two in step.
 
 ### Keep it in step
 
@@ -26,6 +27,9 @@ a successful start means the addon is in place. Later, `omp-termux install lates
 omp-termux install latest   # omp + addon up to the newest build published here
 omp-termux update-self      # replace omp-termux itself
 ```
+
+A newer `omp-termux` on `main` is reported once on stderr; `OMP_TERMUX_NO_UPDATE_CHECK=1` silences that check
+and `OMP_TERMUX_UPDATE_TTL` (seconds, default 86400) sets how often it runs.
 
 ### Build it yourself
 
@@ -60,22 +64,16 @@ missing.
 | `omp-termux install [version\|file]` | bring this device to that version and install the addon (`latest` = the newest build this repository publishes, default = the version it runs); skips the download when it is already there, builds only when needed, and provisions a bare device |
 | `omp-termux status` / `verify` | show what is installed / check that the addon loads |
 | `omp-termux update-self` | replace the installed `omp-termux` with the newest from this repository |
-| `omp-termux uninstall-self` | remove the tool and its cache from this device |
+| `omp-termux uninstall-self` | remove the tool and its cache from this device (omp stays) |
 | `omp-termux doctor` | check the environment of this device |
 
 Building is the other half and has its own list: `./dev/omp-termux-dev help` (`build`, `doctor`).
 
 ## Notes
 
-* The addon must match the version of `@oh-my-pi/pi-natives` you have; `omp-termux install` keeps them aligned.
-* `omp-termux` prints one line to stderr when a newer copy of itself is on `main`;
-  `OMP_TERMUX_NO_UPDATE_CHECK=1` turns that check off and `OMP_TERMUX_UPDATE_TTL` (seconds, default 86400)
-  sets how often it runs.
-* The device keeps the addon and `omp-termux`: installing puts the tool on PATH, and `omp-termux uninstall-self`
-  removes it while leaving omp alone.
-* Restart `omp` after installing: a running one keeps using the old addon.
-* On Termux the screen scrolls from the top when the software keyboard opens;
-  `omp config set tui.resizeScrollback preserve` avoids it.
+* Since omp 18.4.1, `omp` writes to the terminal about once a second even when idle, and Termux pulls the view back
+  to the bottom on every write: read back in `tmux` (`Ctrl-b [`) or with `SCROLL` (`⇳`) in Termux 0.119 and newer.
+  The software keyboard does the same on resize; `omp config set tui.resizeScrollback preserve` avoids that.
 * omp draws its status line with Unicode symbols; for Nerd Font icons see [Nerd Font icons on Termux](docs/font.md)
   (or [中文](docs/font.zh-CN.md)).
 
