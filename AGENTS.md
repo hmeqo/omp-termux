@@ -55,7 +55,7 @@ Two bash scripts do the work: one for the device, one for building the addon.
 | `install.sh` | Device bootstrap for ordinary users: fetch raw `bin/omp-termux`, `bash -n` it, run device `install`. |
 |`patches/`|Vendored upstream PR #6350 patch: attribution header, then 15 diffs over 15 files against v18.5.1. Read only by the build half.|
 | `.github/workflows/build.yml` | The only CI: cross-compile and publish one release per omp version. |
-| `docs/` | `README.zh-CN.md` (translation of `README.md`), `font.md` / `font.zh-CN.md` (Nerd Font notes). |
+| `docs/` | `README.zh-CN.md` (translation of `README.md`), `build.md` / `build.zh-CN.md` (the build half), `font.md` / `font.zh-CN.md` (Nerd Font notes). |
 | `work/`, `out/` | Gitignored: upstream clone + cargo target + opus prefix + napi-cli; built artifacts. |
 
 ## Development Commands
@@ -116,11 +116,12 @@ OMP_TERMUX_MODE=device ./dev/omp-termux-dev build   # native build on the phone:
   the two files. Content may differ only where the audience differs (today: the `-CN` font variant exists only in
   the Chinese font doc). Keep the language switcher on line 3, prose lines broken after punctuation (`。,:;、`)
   and never left ending on a CJK function word, and no personal paths, usernames or e-mail addresses anywhere.
-- Docs describe what a user does and sees: the bootstrap for ordinary users, the device verbs, and a build
-  example naming `dev/omp-termux-dev` and where the artifact goes. The tool provisions bun and omp itself and
-  the build half puts its build on a device over ssh, so no doc teaches a hand copy or a hand-managed bun/omp.
-  Do not document build mechanics, CI cadence, internal cache paths or loader internals there; that knowledge
-  belongs in the code comment next to the mechanism.
+- Docs describe what a user does and sees: `README.md` is the user side (the bootstrap, the device verbs and the
+  caveats), and `docs/build.md` is the maintainer side (what the build half needs, the build itself, and putting
+  the result on a device). The tool provisions bun and omp itself and the build half puts its build on a device
+  over ssh, so no doc teaches a hand copy or a hand-managed bun/omp. Do not document build mechanics, CI cadence,
+  internal cache paths or loader internals there; that knowledge belongs in the code comment next to the
+  mechanism.
 
 ## Important Files
 
@@ -222,4 +223,4 @@ OMP_TERMUX_MODE=device ./dev/omp-termux-dev build   # native build on the phone:
   the NDK cross-build, the real ssh transport, and anything touching `pkg`/`termux-*`.
 - Doc statements are the user-visible contract — `README.md` must stay true: the install prose and the command
   table carry the addon-must-match and tool-on-PATH facts plus `uninstall-self` leaving omp alone, the
-  limitations keep arm64-v8a only and API 24 / Android 7+, and the notes keep the Termux viewport behaviour.
+  limitations keep arm64-v8a only and API 24 / Android 7+, and the caveats keep the Termux viewport behaviour.

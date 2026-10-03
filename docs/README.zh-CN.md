@@ -3,8 +3,7 @@
 [English](../README.md) | [中文](README.zh-CN.md)
 
 `omp` 需要原生插件 `@oh-my-pi/pi-natives`,而上游没有为 Android 构建它,因此在 Termux 上会报错退出:
-`Unsupported platform: android-arm64`。本仓库用来安装这个插件,并在设备上留下一个 `omp-termux` 命令,
-方便日后保持同步。
+`Unsupported platform: android-arm64`。本仓库负责安装这个插件,并提供一个 `omp-termux` 命令,让两者保持同步。
 
 ## 安装
 
@@ -31,30 +30,6 @@ omp-termux update-self      # replace omp-termux itself
 `main` 上有更新的 `omp-termux` 时,它会在 stderr 打一行提示;`OMP_TERMUX_NO_UPDATE_CHECK=1` 可关闭该检查,
 `OMP_TERMUX_UPDATE_TTL`(秒,默认 86400)可调整检查间隔。
 
-### 自己编译
-
-在本仓库的检出目录里,用 [开发依赖](#开发) 中列出的工具:
-
-```sh
-./dev/omp-termux-dev build 18.3.4   # cross-compiles out/pi_natives.android-arm64.node
-```
-
-这是本仓库的维护者那半边:它产出插件,并在手机可 ssh 访问时把它装到设备上、就地校验。
-同一个脚本在设备上也能原生编译(耗时以小时计,建议放进 `tmux`);不带版本号时两者都编译上游最新版本。
-
-```sh
-./dev/omp-termux-dev device user@host     # save the target (~/.config/omp-termux/config)
-./dev/omp-termux-dev install 18.3.4       # build when needed, upload, install and verify there
-./dev/omp-termux-dev status               # what the device runs
-```
-
-## 开发
-
-`bin/omp-termux` 是设备端工具;`dev/omp-termux-dev` 是编译那半,它 source 前者以复用两边共用的名字与函数。
-从源码构建需要一台工作站(在 Linux x86_64 上验证),装有 `rustup`、`bun` ≥ 1.3.14、Android NDK
-(依次取 `OMP_TERMUX_NDK`、`ANDROID_NDK_ROOT`、`ANDROID_NDK_HOME`,或用 SDK 里最新的 `ndk/*`)、`cmake`、
-`ninja`、`git`、`curl`、`unzip`。缺哪个,`./dev/omp-termux-dev doctor` 会指出来。
-
 ## 命令
 
 | 命令 | 说明 |
@@ -65,9 +40,9 @@ omp-termux update-self      # replace omp-termux itself
 | `omp-termux uninstall-self` | 从本设备移除工具及其缓存(omp 保留) |
 | `omp-termux doctor` | 检查本设备的运行环境 |
 
-编译是另一半,有自己的清单:`./dev/omp-termux-dev help`(`build`、`doctor`)。
+从源码编译插件是本仓库的另一半:[编译插件](build.zh-CN.md)(另有 [英文版](build.md))。
 
-## 说明
+## 注意事项
 
 * 自 omp 18.4.1 起,`omp` 即使空闲也大约每秒写一次终端,而 Termux 会在每次写入后把视图拉回底部:
   翻阅回滚请用 `tmux`(`Ctrl-b [`),或用 Termux 0.119 及更新版本的 `SCROLL`(`⇳`)extra key。
