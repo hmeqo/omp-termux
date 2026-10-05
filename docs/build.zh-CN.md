@@ -2,8 +2,7 @@
 
 [English](build.md) | [中文](build.zh-CN.md)
 
-这是本仓库的维护者那半边:它产出插件,并在手机可 ssh 访问时把它装到设备上、就地校验。
-`bin/omp-termux` 是设备端工具;`dev/omp-termux-dev` 是编译那半,它 source 前者以复用两边共用的名字与函数。
+`dev/omp-termux-dev` 在检出目录里交叉编译插件,并在设备可 ssh 访问时把它装到设备上、就地校验。
 
 ## 依赖
 

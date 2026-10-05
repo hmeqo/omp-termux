@@ -41,16 +41,18 @@ and `OMP_TERMUX_UPDATE_TTL` (seconds, default 86400) sets how often it runs.
 | `omp-termux uninstall-self` | remove the tool and its cache from this device (omp stays) |
 | `omp-termux doctor` | check the environment of this device |
 
-Building the addon from source is the other half of the repository: [Building the addon](docs/build.md)
-(or [中文](docs/build.zh-CN.md)).
+Building the addon from source: [Building the addon](docs/build.md) (or [中文](docs/build.zh-CN.md)).
 
 ## Caveats
 
-* Since omp 18.4.1, `omp` writes to the terminal about once a second even when idle, and Termux pulls the view back
-  to the bottom on every write: read back in `tmux` (`Ctrl-b [`) or with `SCROLL` (`⇳`) in Termux 0.119 and newer.
-  The software keyboard does the same on resize; `omp config set tui.resizeScrollback preserve` avoids that.
+* On Termux the screen scrolls from the top when the software keyboard opens;
+  `omp config set tui.resizeScrollback preserve` avoids it.
 * omp draws its status line with Unicode symbols; for Nerd Font icons see [Nerd Font icons on Termux](docs/font.md)
   (or [中文](docs/font.zh-CN.md)).
+* Termux pulls the view back to the bottom whenever `omp` writes to the terminal; if that gets in the way, try
+  `tmux` (`Ctrl-b [`) or `SCROLL` (`⇳`) in Termux 0.119 and newer.
+* omp 18.4.1 through 18.5.0 write to the terminal once a second even while idle, so the view returns about a second
+  after scrolling back.
 
 ## Limitations
 

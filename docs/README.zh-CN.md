@@ -40,15 +40,16 @@ omp-termux update-self      # replace omp-termux itself
 | `omp-termux uninstall-self` | 从本设备移除工具及其缓存(omp 保留) |
 | `omp-termux doctor` | 检查本设备的运行环境 |
 
-从源码编译插件是本仓库的另一半:[编译插件](build.zh-CN.md)(另有 [英文版](build.md))。
+从源码编译插件:[编译插件](build.zh-CN.md)(另有 [英文版](build.md))。
 
 ## 注意事项
 
-* 自 omp 18.4.1 起,`omp` 即使空闲也大约每秒写一次终端,而 Termux 会在每次写入后把视图拉回底部:
-  翻阅回滚请用 `tmux`(`Ctrl-b [`),或用 Termux 0.119 及更新版本的 `SCROLL`(`⇳`)extra key。
-  软键盘改变尺寸时也会如此,用 `omp config set tui.resizeScrollback preserve` 可避免。
+* Termux 上弹出软键盘会让画面从头滚到底,执行 `omp config set tui.resizeScrollback preserve` 可避免。
 * omp 默认用 Unicode 符号绘制状态行;想换成 Nerd Font 图标,见 [Termux 上的 Nerd Font 图标](font.zh-CN.md)
   (另有 [英文版](font.md))。
+* Termux 会在 `omp` 每次写终端后把视图拉回底部;遇到时,可以试试 `tmux`(`Ctrl-b [`),或用 Termux 0.119 及更新版本的
+  `SCROLL`(`⇳`)extra key 冻结视图。
+* omp 18.4.1 到 18.5.0 空闲时也会每秒写一次终端,回滚后大约一秒就又被拉回底部。
 
 ## 限制
 

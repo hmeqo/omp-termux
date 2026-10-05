@@ -2,9 +2,8 @@
 
 [English](build.md) | [中文](build.zh-CN.md)
 
-This is the maintainer's half of the repository: it produces the addon and, with the phone reachable over ssh,
-puts it on the device and verifies it there. `bin/omp-termux` is the device tool; `dev/omp-termux-dev` is this
-half, and sources it for the names and helpers both share.
+`dev/omp-termux-dev` cross-compiles the addon from a checkout and, with the device reachable over ssh, puts it there
+and verifies it.
 
 ## Requirements
 
