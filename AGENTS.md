@@ -31,16 +31,17 @@ Two bash scripts do the work: one for the device, one for building the addon.
   `work/src`) → `ensure_rust_target` → `apply_patch` (vendored `patches/*.patch`, else the PR diff from the
   network) → `install_build_deps` → `prepare_opus` → `cross_build` (napi-rs CLI, `--profile ci`,
   `aarch64-linux-android`) → `finalize_artifact` (`stamp_artifact`, then rename the bare `pi_natives*.node` to
-  `$ADDON`, and copy `desktop-adapter.js` into `out/`) → `verify_artifact "$version"`.
+  `$ADDON`) → `verify_artifact "$version"`.
 - Build path (device, hours): `device_build` builds through upstream's `packages/natives/scripts/build-bindings.ts`
-  and leaves the addon and its adapter in `work/`, which is what a device `install` reads.
+  and leaves the addon in `work/`, which is what a device `install` reads.
 - Install path (device): `device_install` → `link_global_tree` (Termux bun-layout repair) → `fetch_release` (or a
   local `.node`) → `install_addon` (`cp` into every matching `@oh-my-pi/pi-natives/native/`, skipping version
   mismatches) → `run_verify` (loads `native/index.js` through bun and checks the expected export set) →
   `cmd_install_self` (the tool puts its own copy at `$PREFIX/bin/omp-termux` and links it into `$BINDIR`, which is
   what makes the next run able to self-update; it is a step of `install`, not a verb).
 - CI (`.github/workflows/build.yml`) runs exactly `./dev/omp-termux-dev build "$VERSION"` and publishes release
-  `omp-<version>` with two assets: `out/pi_natives.android-arm64.node` and `out/desktop-adapter.js`.
+  `omp-<version>` carrying `out/pi_natives.android-arm64.node`; the adapter the package loads is the package's
+  own, because the addon only lands in the package whose version it reports.
 - `install`, `status`, `verify` and `doctor` act on the pi-natives of the machine that runs them, so they are
   device verbs; `help` and the self-management verbs (`update-self`, `uninstall-self`) work anywhere. Building
   lives in the other half. Scratch downloads live in
@@ -158,8 +159,8 @@ OMP_TERMUX_MODE=device ./dev/omp-termux-dev build   # native build on the phone:
   upgrading omp, resolves `latest` from this repository's newest
   published release, skips everything (download included) when that version is already installed and loads, and
   fails only when the installed version is newer than anything published here; `install_addon` takes the target
-  version from the artifact's own stamp (the same release the loader compares) and `copy_adapter` takes
-  `desktop-adapter.js` from the directory holding the artifact, so nothing reads a source tree any more;
+  version from the artifact's own stamp (the same release the loader compares), so nothing reads a source tree
+  any more;
   `verify_artifact` hard-fails on
   non-`ARM aarch64`, a missing NDK note, any `GLIBC_` need, or `libc.so.6`/`ld-linux` NEEDED entries.
 - Release identity of an addon: a 64-byte slot the build stamps after linking (`PI_NATIVES_VERSION_STAMP:<version>`,
@@ -217,7 +218,7 @@ OMP_TERMUX_MODE=device ./dev/omp-termux-dev build   # native build on the phone:
   differs and none when it matches, no request at all while the cache is fresh or when
   `OMP_TERMUX_NO_UPDATE_CHECK` is set, and its scratch files never survive into `$TMPDIR`.
 - The device access is asserted with stubbed `ssh`/`scp` that log every call and run the command line against a
-  fake device HOME: the artifact, its adapter and the tool are uploaded, the tool installs them there, the
+  fake device HOME: the artifact and the tool are uploaded, the tool installs them there, the
   scratch dir is gone afterwards, and `status` asks the device rather than acting locally.
 - Not verifiable without real hardware: bun's global layout behaviour on Android (the `link_global_tree` repair),
   the NDK cross-build, the real ssh transport, and anything touching `pkg`/`termux-*`.

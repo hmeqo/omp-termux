@@ -76,7 +76,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="omp-$VERSION"
-          FILES="out/pi_natives.android-arm64.node out/desktop-adapter.js"
+          FILES="out/pi_natives.android-arm64.node"
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" $FILES --clobber
           else

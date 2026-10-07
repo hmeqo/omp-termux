@@ -89,8 +89,7 @@ done
 rm -rf "$T" "$FB" "$RAW" "$R19" "$R20" "$LOG" "$CURL_LOG"
 mkdir -p "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V0@@@1/native" "$T/usr/bin" "$T/tmp" "$FB" "$RAW/bin" "$R19" "$R20" "$T/.config"
 pkg_json "$V0" >"$T/.bun/install/cache/@oh-my-pi/pi-natives@$V0@@@1/package.json"
-cp "$R/out/pi_natives.android-arm64.node" "$R/out/desktop-adapter.js" "$R19/"
-cp "$R/out/desktop-adapter.js" "$R20/"
+cp "$R/out/pi_natives.android-arm64.node" "$R19/"
 # $R19 serves the artifact as built. $R20 serves the same bytes with $V1 recorded the pre-stamp way (a
 # __piNativesV<major>_<minor>_<patch> napi name, no stamp), so both identities the tool reads stay covered by
 # the cases below — those are also what a release published before the stamp looks like.
@@ -128,7 +127,7 @@ HOME=$T TMPDIR=$T/tmp PREFIX=$T/usr XDG_CONFIG_HOME=$T/.config XDG_CACHE_HOME=$T
 	OMP_TERMUX_RAW_BASE="file://$RAW" OMP_TERMUX_RELEASE_BASE="file://$R19" sh "$R/install.sh" >/tmp/v1.log 2>&1
 chk "bootstrap: install.sh exits 0" "$?" "0"
 P="$T/.bun/install/cache/@oh-my-pi/pi-natives@$V0@@@1"; TOOL="$T/usr/bin/omp-termux"
-chk "bootstrap: addon in place" "$(ls "$P/native" | tr '\n' ' ')" "desktop-adapter.js pi_natives.android-arm64.node "
+chk "bootstrap: addon in place" "$(ls "$P/native" | tr '\n' ' ')" "pi_natives.android-arm64.node "
 chk "bootstrap: tool persisted" "$([ -f "$T/.local/opt/omp-termux/bin/omp-termux" ] && echo yes)" "yes"
 chk "symlink lands in \$PREFIX/bin" "$(readlink "$T/usr/bin/omp-termux")" "$T/.local/opt/omp-termux/bin/omp-termux"
 chk "bootstrap: scratch removed" "$(ls -A "$T/tmp" | wc -l)" "0"
@@ -163,7 +162,7 @@ fake_curl "$FB/curl" "$V1" "$V1"   # this repository publishes $V1 now, which $R
 : >"$LOG"; rm -f "$CACHE"
 dev "file://$R20" install latest >/tmp/v3.log 2>&1; chk "install latest exit=0" "$?" "0"
 chk "calls bun to upgrade" "$(grep -o "install -g @oh-my-pi/pi-coding-agent@$V1" "$LOG" | head -1)" "install -g @oh-my-pi/pi-coding-agent@$V1"
-chk "addon in place in the new package" "$(ls "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V1@@@1/native" 2>/dev/null | tr '\n' ' ')" "desktop-adapter.js pi_natives.android-arm64.node "
+chk "addon in place in the new package" "$(ls "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V1@@@1/native" 2>/dev/null | tr '\n' ' ')" "pi_natives.android-arm64.node "
 
 # Already at the published version: the release is never fetched, so nothing is downloaded.
 : >"$LOG"; : >"$CURL_LOG"
@@ -233,7 +232,7 @@ chk "no argument, device ahead: bun not called" "$(grep -c 'install -g' "$LOG" 2
 : >"$LOG"; dev "file://$R20" install "$V1" >/tmp/vstep.log 2>&1; chk "named version steps back" "$?" "0"
 grep -q "no build published here" /tmp/vstep.log && no "named version: still refused" || ok "named version: not refused"
 chk "named version: installs the version asked for" "$(grep -o "install -g @oh-my-pi/pi-coding-agent@$V1" "$LOG" | head -1)" "install -g @oh-my-pi/pi-coding-agent@$V1"
-chk "named version: addon lands in that package" "$(ls "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V1@@@1/native" 2>/dev/null | tr '\n' ' ')" "desktop-adapter.js pi_natives.android-arm64.node "
+chk "named version: addon lands in that package" "$(ls "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V1@@@1/native" 2>/dev/null | tr '\n' ' ')" "pi_natives.android-arm64.node "
 rm -rf "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V2@@@1"   # later sections expect $V0/$V1 only
 
 chk "update-self on identical content: already up to date" "$(dev "file://$R19" update-self 2>&1 | grep -c 'already up to date')" "1"
@@ -283,7 +282,7 @@ dev "file://$R20" install latest >/tmp/vroots.log 2>&1
 chk "two roots: upgrade exits 0" "$?" "0"
 grep -q "installing omp $V1 on this device" /tmp/vroots.log && ok "two roots: picked the root carrying omp" || no "two roots: picked the wrong root"
 chk "two roots: root pinned (BUN_INSTALL)" "$(grep -o "BUN_INSTALL=$T/.cache/.bun\$" "$LOG" | head -1)" "BUN_INSTALL=$T/.cache/.bun"
-chk "two roots: new package lands in that root" "$(ls "$T/.cache/.bun/install/cache/@oh-my-pi/pi-natives@$V1@@@1/native" 2>/dev/null | tr '\n' ' ')" "desktop-adapter.js pi_natives.android-arm64.node "
+chk "two roots: new package lands in that root" "$(ls "$T/.cache/.bun/install/cache/@oh-my-pi/pi-natives@$V1@@@1/native" 2>/dev/null | tr '\n' ' ')" "pi_natives.android-arm64.node "
 
 echo
 echo "== only another version on the device: install fails and names what it scanned"
@@ -370,14 +369,12 @@ HOME="$TW" XDG_CONFIG_HOME="$TW/.config" OMP_TERMUX_HOST=user@device OMP_TERMUX_
 	PATH="$FS:$PATH" bash "$R/dev/omp-termux-dev" install "$R/out/pi_natives.android-arm64.node" >/tmp/vssh-install.log 2>&1
 chk "device install exits 0" "$?" "0"
 chk "device install: no rebuild for a local artifact" "$(grep -c 'cross-compiling' /tmp/vssh-install.log)" "0"
-chk "device install: uploads the tool (install + verify), the artifact and its adapter" \
-	"$(grep -c '^scp -P 8022' /tmp/vssh.log)" "4"
+chk "device install: uploads the tool (install + verify) and the artifact" \
+	"$(grep -c '^scp -P 8022' /tmp/vssh.log)" "3"
 grep -q "^scp .*out/pi_natives\.android-arm64\.node user@device:" /tmp/vssh.log &&
 	ok "device install: the artifact goes to the device scratch" || no "device install: artifact not uploaded"
-grep -q "^scp .*out/desktop-adapter\.js user@device:" /tmp/vssh.log &&
-	ok "device install: the adapter goes with it" || no "device install: adapter not uploaded"
 chk "device install: the device ends up with the addon" \
-	"$(ls "$TS/.bun/install/global/node_modules/@oh-my-pi/pi-natives/native" | tr '\n' ' ')" "desktop-adapter.js pi_natives.android-arm64.node "
+	"$(ls "$TS/.bun/install/global/node_modules/@oh-my-pi/pi-natives/native" | tr '\n' ' ')" "pi_natives.android-arm64.node "
 chk "device install: the device keeps the tool" "$([ -f "$TS/.local/opt/omp-termux/bin/omp-termux" ] && echo yes)" "yes"
 chk "device install: leaves no scratch behind" "$([ -d "$TS/.cache/omp-termux" ] && echo present || echo gone)" "gone"
 chk "device install: verifies on the device" "$(grep -c 'all good' /tmp/vssh-install.log)" "1"
@@ -401,7 +398,6 @@ pkg_json "$V2" >"$XPKG/package.json"
 pkg_json "$V2" >"$XDGR/install/global/node_modules/@oh-my-pi/pi-natives/package.json"
 pkg_json "$V0" >"$LEGR/install/cache/@oh-my-pi/pi-natives@$V0@@@1/package.json"
 cp "$R/out/pi_natives.android-arm64.node" "$LEGR/install/cache/@oh-my-pi/pi-natives@$V0@@@1/native/"
-cp "$R/out/desktop-adapter.js" "$RX/"
 python3 -c "
 import pathlib
 b = pathlib.Path('$R/out/pi_natives.android-arm64.node').read_bytes()
@@ -435,7 +431,6 @@ python3 -c "
 import pathlib
 b = pathlib.Path('$R/out/pi_natives.android-arm64.node').read_bytes()
 pathlib.Path('$RF/pi_natives.android-arm64.node').write_bytes(b.replace(b'$S0', b'$S2'))"
-cp "$R/out/desktop-adapter.js" "$RF/"
 fake_curl "$FF/curl" "$V2" "$V2"
 cat >"$FF/pkg" <<'PEOF'
 #!/bin/sh

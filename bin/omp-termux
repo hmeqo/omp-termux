@@ -29,7 +29,7 @@ SCRATCH=".cache/omp-termux"             # scratch dir on the device; removed aft
 ADDON="pi_natives.android-arm64.node"
 UPSTREAM_REPO="can1357/oh-my-pi"        # upstream project: its newest release has no build here until we build one
 REPO="${OMP_TERMUX_REPO:-hmeqo/omp-termux}"
-TOOL_VERSION=0.2.0                      # a label only: every comparison reads the content hash
+TOOL_VERSION=0.3.0                      # a label only: every comparison reads the content hash
 PROG="omp-termux"                        # names this script in hints; dev/omp-termux-dev overrides it
 SELF_URL="${OMP_TERMUX_RAW_BASE:-https://raw.githubusercontent.com/$REPO/main}/bin/omp-termux"
 SELF_CACHE="$PREFIX/cache/self-update"  # under $PREFIX, so uninstall-self removes it too
@@ -380,21 +380,9 @@ cmd_update_self() {
 }
 
 # --- install: on the device -----------------------------------------------------------------------
-# Copies the patched adapter next to the addon: on Android the addon exports no DesktopSession, and the
-# package entrypoint calls adaptDesktopSession() at load time.
-copy_adapter() { # $1 = package's native dir, $2 = dir holding the artifact (carries its own adapter)
-	local native_dir="$1" artifact_dir="$2"
-	if [ -f "$artifact_dir/desktop-adapter.js" ]; then
-		cp -f "$artifact_dir/desktop-adapter.js" "$native_dir/desktop-adapter.js"
-		return 0
-	fi
-	warn "no desktop-adapter.js next to the artifact: DesktopSession will be a broken adapter class"
-}
-
 install_addon() { # $1 = path to a .node
-	local addon="$1" target_version="" n=0 seen="" d v artifact_dir
+	local addon="$1" target_version="" n=0 seen="" d v
 	[ -f "$addon" ] || die "no artifact to install: $addon"
-	artifact_dir="$(cd "$(dirname "$addon")" && pwd)"
 	# What the artifact reports is what the loader checks, so it decides the target version.
 	target_version="$(artifact_version "$addon")"
 	[ -n "$target_version" ] && msg "target version from the artifact: $target_version"
@@ -408,7 +396,6 @@ install_addon() { # $1 = path to a .node
 		fi
 		mkdir -p "$d/native"
 		cp -f "$addon" "$d/native/$ADDON"
-		copy_adapter "$d/native" "$artifact_dir"
 		msg "installed -> $d/native/$ADDON$(is_workspace_load "$d" && echo ' [workspace-load: release check skipped]' || echo ' [node_modules: release must match]')"
 		n=$((n + 1))
 	done < <(natives_dirs)
@@ -502,18 +489,16 @@ device_ensure_bun() { # install bun on this device when it is missing
 }
 
 fetch_release() { # $1 = pi-natives version; puts the addon in RELEASE_ADDON, dies when the release is missing
-	local version="$1" base f reported
+	local version="$1" base reported
 	base="${OMP_TERMUX_RELEASE_BASE:-https://github.com/$REPO/releases/download/omp-$version}"
 	msg "fetching pi-natives $version for android-arm64"
 	mkdir -p "$HOME/$SCRATCH"
-	for f in "$ADDON" desktop-adapter.js; do
-		# .part then rename: curl fails a length mismatch, so a partial file never takes the addon's name
-		curl -fsSL --retry 3 "$base/$f" -o "$HOME/$SCRATCH/$f.part" || {
-			rm -rf "$HOME/$SCRATCH"
-			die "no release for $version at $base; nothing was changed"
-		}
-		mv -f "$HOME/$SCRATCH/$f.part" "$HOME/$SCRATCH/$f"
-	done
+	# .part then rename: curl fails a length mismatch, so a partial file never takes the addon's name
+	curl -fsSL --retry 3 "$base/$ADDON" -o "$HOME/$SCRATCH/$ADDON.part" || {
+		rm -rf "$HOME/$SCRATCH"
+		die "no release for $version at $base; nothing was changed"
+	}
+	mv -f "$HOME/$SCRATCH/$ADDON.part" "$HOME/$SCRATCH/$ADDON"
 	reported="$(artifact_version "$HOME/$SCRATCH/$ADDON")"
 	if [ "$reported" != "$version" ]; then
 		rm -rf "$HOME/$SCRATCH"

@@ -179,7 +179,6 @@ device_build() { # $1 = version (default: the one installed on this device)
 	fi
 	mkdir -p "$WORK"
 	cp -f "$built" "$WORK/$ADDON"
-	cp -f "$SRC/packages/natives/native/desktop-adapter.js" "$WORK/desktop-adapter.js"
 	msg "artifact $WORK/$ADDON ($(du -h "$WORK/$ADDON" | cut -f1))"
 }
 
@@ -281,7 +280,6 @@ finalize_artifact() {
 		mv "$produced" "$OUT/$ADDON"
 	fi
 	stamp_artifact
-	cp -f "$SRC/packages/natives/native/desktop-adapter.js" "$OUT/desktop-adapter.js"
 }
 
 verify_artifact() { # $1 = the version the artifact must report (optional)
@@ -425,13 +423,10 @@ device_run() { # $1 = command line for the script on the device; the scratch dir
 }
 
 device_upload() { # the artifact lands in the same scratch dir the tool is uploaded to
-	local f
+	[ -f "$OUT/$ADDON" ] || die "no artifact to upload: $OUT/$ADDON"
 	device_ssh "mkdir -p ~/$SCRATCH" || die "ssh failed"
-	for f in "$ADDON" desktop-adapter.js; do
-		[ -f "$OUT/$f" ] || continue
-		msg "copying $f"
-		device_scp "$OUT/$f" "$SCRATCH"
-	done
+	msg "copying $ADDON"
+	device_scp "$OUT/$ADDON" "$SCRATCH"
 }
 
 device_installed_version() { # "" when the device has no @oh-my-pi/pi-natives or ssh fails
