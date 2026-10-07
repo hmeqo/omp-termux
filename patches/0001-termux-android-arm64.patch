@@ -5,20 +5,22 @@
 #   author    : anatoli-tsinovoy
 #   fork pull : https://github.com/anatoli-tsinovoy/oh-my-pi/pull/6
 #   head sha  : dff59821aeb5efaa041095f4bb9c5811c71ce613  (base: main 3b3a6dc9bbd8)
-#   rebased   : 2026-10-03 onto v18.5.1; the CHANGELOG hunks are dropped.
+#   rebased   : 2026-10-07 onto v18.7.0; the CHANGELOG hunks are dropped.
 #
-# 15 files, +278/-52 against v18.5.1. Summary:
+# 13 files, +230/-55 against v18.7.0. Summary:
 #   crates/pi-natives           arboard + clipboard/desktop modules become
 #                               cfg(not(target_os = "android")) — arboard has no
 #                               Android backend.
 #   crates/pi-shell             compiles its Linux process backend on Android too.
-#   crates/pi-builtins,         Bionic-compatible process discovery (/proc).
-#   crates/pi-walker
+#   crates/pi-builtins,         Bionic-compatible process discovery (/proc), the
+#   crates/pi-walker            Linux primitives module and its re-export included.
 #   packages/natives/scripts/   scopes RUSTC_BOOTSTRAP to xutf,pi_natives so a
 #     build-bindings.ts         stable rustc (what Termux ships) can build them.
-#   packages/natives/native/    passes `undefined` through so the public
-#     desktop-adapter.js        entrypoint survives a missing DesktopSession.
 #   packages/coding-agent       Termux clipboard path, bundled-binary launcher.
+#
+# The desktop-adapter pass-through this patch used to carry is gone: v18.7.0
+# keeps the shared native entrypoint importable with a missing DesktopSession
+# and defers its rejection to the first desktop use.
 #
 # Applied by apply_patch in dev/omp-termux-dev (git apply, CHANGELOG hunks excluded).
 diff --git a/crates/pi-builtins/src/kill.rs b/crates/pi-builtins/src/kill.rs
@@ -63,23 +65,48 @@ index b342a7e..08caffd 100644
  		return (0..=64).contains(&number).then_some(number);
  	}
  	match KillSignal::parse(value).ok()? {
+diff --git a/crates/pi-builtins/src/lib.rs b/crates/pi-builtins/src/lib.rs
+index 2faf7f1..894f8a8 100644
+--- a/crates/pi-builtins/src/lib.rs
++++ b/crates/pi-builtins/src/lib.rs
+@@ -292,7 +292,7 @@ pub use proc_snapshot::{ProcInfo, ProcessStatus};
+ /// implementation.
+ #[cfg(all(
+ 	feature = "util.procs",
+-	any(target_os = "linux", target_os = "macos", target_os = "windows")
++	any(target_os = "android", target_os = "linux", target_os = "macos", target_os = "windows")
+ ))]
+ pub use proc_snapshot::sys as proc_sys;
+ 
 diff --git a/crates/pi-builtins/src/proc_snapshot.rs b/crates/pi-builtins/src/proc_snapshot.rs
-index 94f00ce..89ec774 100644
+index 3703153..1578740 100644
 --- a/crates/pi-builtins/src/proc_snapshot.rs
 +++ b/crates/pi-builtins/src/proc_snapshot.rs
-@@ -62,7 +62,7 @@ pub(crate) fn sanitize_process_command(command: String) -> String {
- 		.collect()
+@@ -100,7 +100,7 @@ fn parse_procargs2(buffer: &[u8]) -> Vec<String> {
+ }
+ 
+ /// Linux process primitives: procfs and pidfds.
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "android", target_os = "linux"))]
+ pub mod sys {
+ 	use std::{
+ 		fs,
+@@ -181,7 +181,7 @@ pub mod sys {
+ 	}
  }
  
 -#[cfg(target_os = "linux")]
 +#[cfg(any(target_os = "android", target_os = "linux"))]
  mod proc_snapshot {
- 	use std::{
- 		collections::HashMap,
-@@ -258,6 +258,21 @@ mod proc_snapshot {
- 				return read_stat(self.pid).is_some_and(|stat| stat.start_time == self.stat.start_time);
+ 	use std::{collections::HashMap, fs, os::fd::AsFd, time::Duration};
+ 
+@@ -348,6 +348,24 @@ mod proc_snapshot {
+ 				return alive();
  			}
- 			let Some(pidfd) = open_pidfd(self.pid) else {
+ 			let Some(pidfd) = sys::open_pidfd(self.pid) else {
++				// No pidfd on Android, so identity is pinned by re-reading the
++				// stat line and the signal goes out as kill(2). A queued signal
++				// has no equivalent check and is refused.
 +				#[cfg(target_os = "android")]
 +				{
 +					if queue.is_some() {
@@ -97,8 +124,8 @@ index 94f00ce..89ec774 100644
 +				#[cfg(target_os = "linux")]
  				return false;
  			};
- 			if read_stat(self.pid).is_none_or(|stat| stat.start_time != self.stat.start_time) {
-@@ -403,6 +418,7 @@ mod proc_snapshot {
+ 			if !alive() {
+@@ -473,6 +491,7 @@ mod proc_snapshot {
  		Some((ids.next()?, ids.next()?))
  	}
  
@@ -106,7 +133,7 @@ index 94f00ce..89ec774 100644
  	fn uptime_seconds() -> Option<f64> {
  		fs::read_to_string("/proc/uptime")
  			.ok()?
-@@ -412,6 +428,19 @@ mod proc_snapshot {
+@@ -482,6 +501,19 @@ mod proc_snapshot {
  			.ok()
  	}
  
@@ -126,7 +153,7 @@ index 94f00ce..89ec774 100644
  	fn clock_ticks() -> Option<u64> {
  		// SAFETY: sysconf reads a process-global constant.
  		u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) })
-@@ -1359,7 +1388,7 @@ mod proc_snapshot {
+@@ -1684,7 +1716,7 @@ mod proc_snapshot {
  	}
  }
  
@@ -135,7 +162,7 @@ index 94f00ce..89ec774 100644
  pub use proc_snapshot::{ProcInfo, threads_by_pid};
  
  /// The processes a signal must never reach: this one and its ancestors.
-@@ -1383,7 +1412,7 @@ pub use proc_snapshot::{ProcInfo, threads_by_pid};
+@@ -1708,7 +1740,7 @@ pub use proc_snapshot::{ProcInfo, threads_by_pid};
  ///
  /// Listing is unaffected: `pgrep` still reports ancestors and `ps` still shows
  /// them. Only signalling consults this.
@@ -144,7 +171,7 @@ index 94f00ce..89ec774 100644
  pub(crate) struct HostProcesses {
  	/// This process and its ancestors, nearest first.
  	pub pids:  smallvec::SmallVec<[i32; 16]>,
-@@ -1396,17 +1425,17 @@ pub(crate) struct HostProcesses {
+@@ -1721,17 +1753,17 @@ pub(crate) struct HostProcesses {
  /// Keeping the walk over this rather than over [`ProcInfo`] lets the recycling
  /// cases — which are otherwise only reachable by winning a race against the OS —
  /// be tested with a synthetic tree.
@@ -167,10 +194,10 @@ index 94f00ce..89ec774 100644
  	/// Walks the parent chain from the current process, taking one process-table
  	/// snapshot.
 diff --git a/crates/pi-builtins/src/ps.rs b/crates/pi-builtins/src/ps.rs
-index e02799a..292ac1a 100644
+index d36b3f6..fd16ce8 100644
 --- a/crates/pi-builtins/src/ps.rs
 +++ b/crates/pi-builtins/src/ps.rs
-@@ -1366,7 +1366,7 @@ fn format_ps_elapsed(duration: Duration) -> String {
+@@ -1255,7 +1255,7 @@ fn format_ps_elapsed(duration: Duration) -> String {
  	}
  }
  
@@ -180,7 +207,7 @@ index e02799a..292ac1a 100644
  	let value = fs::read_to_string("/proc/meminfo")
  		.ok()?
 diff --git a/crates/pi-natives/Cargo.toml b/crates/pi-natives/Cargo.toml
-index fc80fca..76120a1 100644
+index 16c4b1c..3ee98f2 100644
 --- a/crates/pi-natives/Cargo.toml
 +++ b/crates/pi-natives/Cargo.toml
 @@ -25,7 +25,6 @@ wayland-pipewire = ["dep:pipewire"]
@@ -191,7 +218,7 @@ index fc80fca..76120a1 100644
  ast-grep-core.workspace = true
  base64.workspace = true
  clap.workspace = true
-@@ -102,6 +101,9 @@ objc2-foundation = "=0.3.2"
+@@ -105,6 +104,9 @@ objc2-foundation = "=0.3.2"
  objc2-application-services = { version = "=0.3.2", default-features = true }
  objc2-core-foundation = "=0.3.2"
  
@@ -217,7 +244,7 @@ index 1469b5f..a0beb42 100644
  pub mod devicecheck;
  pub mod diff;
 diff --git a/crates/pi-shell/src/process.rs b/crates/pi-shell/src/process.rs
-index 0c25591..cd83fe9 100644
+index 5183253..1154b0b 100644
 --- a/crates/pi-shell/src/process.rs
 +++ b/crates/pi-shell/src/process.rs
 @@ -16,7 +16,7 @@ pub use pi_builtins::ProcessStatus;
@@ -230,10 +257,10 @@ index 0c25591..cd83fe9 100644
  	use std::{
  		collections::HashSet,
 diff --git a/crates/pi-walker/src/lib.rs b/crates/pi-walker/src/lib.rs
-index b754f1d..e6a0493 100644
+index c05c32b..f3593d9 100644
 --- a/crates/pi-walker/src/lib.rs
 +++ b/crates/pi-walker/src/lib.rs
-@@ -3882,6 +3882,7 @@ fn push_relative_name(relative: &mut String, name: &str) {
+@@ -3976,6 +3976,7 @@ fn push_relative_name(relative: &mut String, name: &str) {
  	relative.push_str(name);
  }
  
@@ -242,7 +269,7 @@ index b754f1d..e6a0493 100644
  	if seconds < 0 {
  		return None;
 diff --git a/packages/coding-agent/scripts/build-binary.ts b/packages/coding-agent/scripts/build-binary.ts
-index 28ffeff..650d21d 100644
+index 746c00f..2e1a484 100644
 --- a/packages/coding-agent/scripts/build-binary.ts
 +++ b/packages/coding-agent/scripts/build-binary.ts
 @@ -1,5 +1,6 @@
@@ -252,7 +279,7 @@ index 28ffeff..650d21d 100644
  import { createRequire } from "node:module";
  import * as path from "node:path";
  import { compileCodingAgent } from "./compile-binary";
-@@ -73,6 +74,22 @@ async function runCommand(
+@@ -68,6 +69,22 @@ async function runCommand(command: string[]): Promise<void> {
  	}
  }
  
@@ -275,56 +302,60 @@ index 28ffeff..650d21d 100644
  async function main(): Promise<void> {
  	const crossBuild = resolveCrossBuild(Bun.env.CROSS_TARGET);
  	const shouldAdhocSign =
-@@ -95,26 +112,30 @@ async function main(): Promise<void> {
- 			crossBuild ? { ...Bun.env, TARGET_PLATFORM: crossBuild.platform, TARGET_ARCH: crossBuild.arch } : Bun.env,
- 		);
- 		try {
--			await compileCodingAgent({
--				repoRoot,
--				entrypoint: path.join(packageDir, "src", "cli.ts"),
--				outfile: outputPath,
--				transformersVersion,
--				target: crossBuild?.target,
--				executablePath: Bun.env.BUN_COMPILE_EXECUTABLE_PATH || undefined,
--				skipBuiltinCodesign: shouldAdhocSign,
--			});
-+			if (process.platform === "android" && !crossBuild) {
-+				await buildAndroidLauncher(outputPath);
-+			} else {
-+				await compileCodingAgent({
-+					repoRoot,
-+					entrypoint: path.join(packageDir, "src", "cli.ts"),
-+					outfile: outputPath,
-+					transformersVersion,
-+					target: crossBuild?.target,
-+					executablePath: Bun.env.BUN_COMPILE_EXECUTABLE_PATH || undefined,
-+					skipBuiltinCodesign: shouldAdhocSign,
-+				});
+@@ -85,27 +102,33 @@ async function main(): Promise<void> {
+ 		// Rebuild it before compilation so clean checkouts that skipped install
+ 		// hooks still contain that generated bundle.
+ 		await runCommand(["bun", "--cwd=../collab-web", "run", "gen:tool-views"]);
+-		await compileCodingAgent({
+-			repoRoot,
+-			entrypoint: path.join(packageDir, "src", "cli.ts"),
+-			outfile: outputPath,
+-			transformersVersion,
+-			native: crossBuild ?? { platform: process.platform, arch: process.arch },
+-			target: crossBuild?.target,
+-			executablePath: Bun.env.BUN_COMPILE_EXECUTABLE_PATH || undefined,
+-			skipBuiltinCodesign: shouldAdhocSign,
+-		});
++		if (process.platform === "android" && !crossBuild) {
++			// Bun cannot produce an Android binary; the device build ships the
++			// shell launcher instead.
++			await buildAndroidLauncher(outputPath);
++		} else {
++			await compileCodingAgent({
++				repoRoot,
++				entrypoint: path.join(packageDir, "src", "cli.ts"),
++				outfile: outputPath,
++				transformersVersion,
++				native: crossBuild ?? { platform: process.platform, arch: process.arch },
++				target: crossBuild?.target,
++				executablePath: Bun.env.BUN_COMPILE_EXECUTABLE_PATH || undefined,
++				skipBuiltinCodesign: shouldAdhocSign,
++			});
  
--			if (shouldAdhocSign) {
--				await runCommand([
--					"codesign",
--					"--force",
--					"--sign",
--					"-",
--					"--entitlements",
--					path.join(repoRoot, "scripts", "macos-entitlements.plist"),
--					outputPath,
--				]);
-+				if (shouldAdhocSign) {
-+					await runCommand([
-+						"codesign",
-+						"--force",
-+						"--sign",
-+						"-",
-+						"--entitlements",
-+						path.join(repoRoot, "scripts", "macos-entitlements.plist"),
-+						outputPath,
-+					]);
-+				}
- 			}
- 		} finally {
- 			await runCommand(["bun", "--cwd=../natives", "run", "gen:native:reset"]);
+-		if (shouldAdhocSign) {
+-			await runCommand([
+-				"codesign",
+-				"--force",
+-				"--sign",
+-				"-",
+-				"--entitlements",
+-				path.join(repoRoot, "scripts", "macos-entitlements.plist"),
+-				outputPath,
+-			]);
++			if (shouldAdhocSign) {
++				await runCommand([
++					"codesign",
++					"--force",
++					"--sign",
++					"-",
++					"--entitlements",
++					path.join(repoRoot, "scripts", "macos-entitlements.plist"),
++					outputPath,
++				]);
++			}
+ 		}
+ 	} finally {
+ 		await runCommand(["bun", "--cwd=../stats", "run", "gen:stats:reset"]);
 diff --git a/packages/coding-agent/scripts/omp b/packages/coding-agent/scripts/omp
 index 82721c7..4780f90 100755
 --- a/packages/coding-agent/scripts/omp
@@ -468,34 +499,11 @@ index 3c5753c..dcddb9b 100644
  describe("readImageFromClipboard on WSL", () => {
  	it("decodes the PowerShell base64 payload without touching the native bridge", async () => {
  		setPlatform("linux");
-diff --git a/packages/natives/native/desktop-adapter.d.ts b/packages/natives/native/desktop-adapter.d.ts
-index 8044e7b..9e8f2d8 100644
---- a/packages/natives/native/desktop-adapter.d.ts
-+++ b/packages/natives/native/desktop-adapter.d.ts
-@@ -25,4 +25,6 @@ interface AdaptedDesktopSessionConstructor {
- 	new (options: Record<string, unknown>): AdaptedDesktopSession;
- }
- 
-+export function adaptDesktopSession(NativeDesktopSession: undefined): undefined;
-+export function adaptDesktopSession(NativeDesktopSession: null): null;
- export function adaptDesktopSession(NativeDesktopSession: unknown): AdaptedDesktopSessionConstructor;
-diff --git a/packages/natives/native/desktop-adapter.js b/packages/natives/native/desktop-adapter.js
-index 2b8cda8..e6e1675 100644
---- a/packages/natives/native/desktop-adapter.js
-+++ b/packages/natives/native/desktop-adapter.js
-@@ -153,6 +153,7 @@ function frameSignature(capture) {
-  * current addons already expose the complete API and pass through unchanged.
-  */
- export function adaptDesktopSession(NativeDesktopSession) {
-+	if (typeof NativeDesktopSession !== "function") return NativeDesktopSession;
- 	if (typeof NativeDesktopSession?.prototype?.click === "function") return NativeDesktopSession;
- 	const cached = ADAPTED_SESSION_CLASSES.get(NativeDesktopSession);
- 	if (cached) return cached;
 diff --git a/packages/natives/scripts/build-bindings.ts b/packages/natives/scripts/build-bindings.ts
-index 9719a28..2f34b31 100644
+index 089bfd9..a1e392b 100644
 --- a/packages/natives/scripts/build-bindings.ts
 +++ b/packages/natives/scripts/build-bindings.ts
-@@ -22,6 +22,12 @@ import { generateEnumExports } from "./gen-enums";
+@@ -25,6 +25,12 @@ import { generateEnumExports } from "./gen-enums";
  // static build so the local addon never retains host Homebrew paths.
  process.env.PCRE2_SYS_STATIC ??= "1";
  
@@ -508,7 +516,7 @@ index 9719a28..2f34b31 100644
  // Windows: cc-rs and rustc auto-locate cl.exe/link.exe through the VS
  // registry, but the cmake crate (opusic-sys' bundled Opus) needs cmake —
  // and its Ninja generator needs ninja — on PATH. VS Build Tools ships both
-@@ -59,6 +65,57 @@ const repoRoot = path.join(import.meta.dir, "../../..");
+@@ -62,6 +68,57 @@ const repoRoot = path.join(import.meta.dir, "../../..");
  const rustDir = path.join(repoRoot, "crates/pi-natives");
  const nativeDir = path.join(import.meta.dir, "../native");
  const packageJsonPath = path.join(import.meta.dir, "../package.json");
@@ -566,7 +574,7 @@ index 9719a28..2f34b31 100644
  
  const localAddon = resolveLocalHostAddon({
  	platform: process.platform,
-@@ -168,7 +225,11 @@ async function installGeneratedBindings(outputDir: string): Promise<void> {
+@@ -171,7 +228,11 @@ async function installGeneratedBindings(outputDir: string): Promise<void> {
  	const sourcePath = path.join(outputDir, "index.d.ts");
  	const destPath = path.join(nativeDir, "index.d.ts");
  	try {
@@ -579,72 +587,3 @@ index 9719a28..2f34b31 100644
  	} catch (err) {
  		const message = err instanceof Error ? err.message : String(err);
  		throw new Error(`Failed to install generated index.d.ts: ${message}`);
-diff --git a/packages/natives/test/desktop-adapter.test.ts b/packages/natives/test/desktop-adapter.test.ts
-index b23a69c..a6d62b0 100644
---- a/packages/natives/test/desktop-adapter.test.ts
-+++ b/packages/natives/test/desktop-adapter.test.ts
-@@ -1,4 +1,7 @@
- import { describe, expect, it } from "bun:test";
-+import * as fs from "node:fs/promises";
-+import * as os from "node:os";
-+import * as path from "node:path";
- import { adaptDesktopSession } from "../native/desktop-adapter.js";
- 
- class LegacyDesktopSession {
-@@ -42,6 +45,56 @@ class LegacyDesktopSession {
- }
- 
- describe("legacy DesktopSession adapter", () => {
-+	it("keeps unavailable desktop bindings usable through the public entrypoint", async () => {
-+		const fixtureDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-natives-public-entrypoint-"));
-+		try {
-+			const realLoaderUrl = new URL("../native/loader-state.js", import.meta.url).href;
-+			await Promise.all([
-+				fs.writeFile(path.join(fixtureDir, "package.json"), '{"type":"module"}\n'),
-+				fs.copyFile(path.join(import.meta.dir, "../native/index.js"), path.join(fixtureDir, "index.js")),
-+				fs.copyFile(
-+					path.join(import.meta.dir, "../native/desktop-adapter.js"),
-+					path.join(fixtureDir, "desktop-adapter.js"),
-+				),
-+				fs.writeFile(
-+					path.join(fixtureDir, "loader-state.js"),
-+					[
-+						`import { loadNative as loadActualNative } from ${JSON.stringify(realLoaderUrl)};`,
-+						"export function loadNative() {",
-+						"\treturn { ...loadActualNative(), DesktopSession: undefined };",
-+						"}",
-+						"",
-+					].join("\n"),
-+				),
-+				fs.writeFile(
-+					path.join(fixtureDir, "consumer.js"),
-+					[
-+						'import { DesktopSession, visibleWidth } from "./index.js";',
-+						"if (DesktopSession !== undefined) throw new Error('expected unavailable DesktopSession, got ' + typeof DesktopSession);",
-+						'if (visibleWidth("supported", 4) !== 9) throw new Error("supported native export failed");',
-+						'process.stdout.write("ok\\n");',
-+						"",
-+					].join("\n"),
-+				),
-+			]);
-+
-+			const child = Bun.spawn([process.execPath, path.join(fixtureDir, "consumer.js")], {
-+				cwd: fixtureDir,
-+				stdout: "pipe",
-+				stderr: "pipe",
-+			});
-+			const [exitCode, stdout, stderr] = await Promise.all([
-+				child.exited,
-+				new Response(child.stdout).text(),
-+				new Response(child.stderr).text(),
-+			]);
-+			expect(exitCode, stderr).toBe(0);
-+			expect(stdout.trim()).toBe("ok");
-+		} finally {
-+			await fs.rm(fixtureDir, { recursive: true, force: true });
-+		}
-+	});
-+
- 	it("fills conservative capabilities and translates default foreground input", async () => {
- 		const DesktopSession = adaptDesktopSession(LegacyDesktopSession);
- 		const session = new DesktopSession({ display: "all" });
