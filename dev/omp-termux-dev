@@ -357,9 +357,7 @@ device_port() { # explicit setting > what ssh itself resolves for this host > Te
 	printf '8022'
 }
 
-# The same rule as a POSIX snippet the device evaluates itself (see bun_active_root).
-REMOTE_ROOT_PROBE='r=""; for c in "$BUN_INSTALL" "$XDG_CACHE_HOME/.bun" "$HOME/.cache/.bun" "$HOME/.bun"; do [ -n "$c" ] && [ -d "$c/install" ] || continue; [ -z "$r" ] && r="$c"; [ -f "$c/install/global/node_modules/@oh-my-pi/pi-coding-agent/package.json" ] && { r="$c"; break; }; done; if [ -z "$r" ]; then if [ -n "$XDG_CACHE_HOME" ]; then r="$XDG_CACHE_HOME/.bun"; else r="$HOME/.bun"; fi; fi'
-
+# The device evaluates the tool's own root probe (REMOTE_ROOT_PROBE): what it prints is the root in use.
 remote_bun_root() { # a snippet that prints the device's root in use
 	printf '%s; printf "%%s" "$r"' "$REMOTE_ROOT_PROBE"
 }
@@ -378,11 +376,15 @@ device_ssh() { # $1 = POSIX sh command; sshd would otherwise run it with the log
 	ssh -p "$port" -o ConnectTimeout=10 "$host" "sh -c $(printf '%q' "$1")"
 }
 
-device_scp() { # $1 = local file, $2 = remote dir (relative to $HOME)
-	local port
+device_scp() { # $1 = local file, $2 = remote dir: absolute, or relative to the device's $HOME
+	local port target
 	port="$(device_port)"
-	scp -P "$port" -q "$1" "$(device_host):~/$2/" ||
-		scp -P "$port" -O -q "$1" "$(device_host):~/$2/" ||
+	case "${2:-}" in
+		/*) target="$2" ;;
+		*) target="~/$2" ;;
+	esac
+	scp -P "$port" -q "$1" "$(device_host):$target/" ||
+		scp -P "$port" -O -q "$1" "$(device_host):$target/" ||
 		die "could not copy $(basename "$1") (try: pkg install openssh-sftp-server on the device)"
 }
 
@@ -415,16 +417,25 @@ ensure_device_version() { # $1 = target version; installs omp on the device when
 	remote_bun "install -g @oh-my-pi/pi-coding-agent@$want" || die "failed to install omp on the device"
 }
 
+# The scratch dir this half uploads into: OMP_TERMUX_CACHE_HOME when it is set, else the directory the tool
+# uses when nothing is set, relative to the device's HOME. An absolute value is a device path already, and
+# nothing here asks the device: the default costs no round trip.
+SCRATCH="${OMP_TERMUX_CACHE_HOME:-.cache/omp-termux}"
+case "$SCRATCH" in
+	/*) SCRATCH_DEV="$SCRATCH" ;;
+	*) SCRATCH_DEV="~/$SCRATCH" ;;
+esac
+
 device_run() { # $1 = command line for the script on the device; the scratch dir goes in the same session
-	device_ssh "mkdir -p ~/$SCRATCH" ||
+	device_ssh "mkdir -p $SCRATCH_DEV" ||
 		die "ssh failed — is sshd running on the device (pkg install openssh; sshd) and the port right?"
 	device_scp "$SELF" "$SCRATCH"
-	device_ssh "$(remote_bun_env); bash ~/$SCRATCH/omp-termux $1; rc=\$?; rm -rf ~/$SCRATCH; exit \$rc"
+	device_ssh "$(remote_bun_env); bash $SCRATCH_DEV/omp-termux $1; rc=\$?; rm -rf $SCRATCH_DEV; exit \$rc"
 }
 
 device_upload() { # the artifact lands in the same scratch dir the tool is uploaded to
 	[ -f "$OUT/$ADDON" ] || die "no artifact to upload: $OUT/$ADDON"
-	device_ssh "mkdir -p ~/$SCRATCH" || die "ssh failed"
+	device_ssh "mkdir -p $SCRATCH_DEV" || die "ssh failed"
 	msg "copying $ADDON"
 	device_scp "$OUT/$ADDON" "$SCRATCH"
 }
@@ -469,7 +480,7 @@ resolve_target() {
 install_on_device() {
 	device_upload
 	msg "installing on the device"
-	device_run "install ~/$SCRATCH/$ADDON" || die "installing the addon on the device failed"
+	device_run "install $SCRATCH_DEV/$ADDON" || die "installing the addon on the device failed"
 	msg "verifying on the device"
 	device_run verify || die "verification failed on the device"
 }

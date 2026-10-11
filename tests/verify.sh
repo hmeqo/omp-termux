@@ -359,8 +359,9 @@ while [ $# -gt 0 ]; do
 	esac
 done
 rel="$(printf '%s' "$dst" | sed 's/^[^:]*://; s|^~/*||')"
-mkdir -p "/tmp/vssh/$rel"
-exec cp -f "$src" "/tmp/vssh/$rel/"
+case "$rel" in /*) dir="$rel" ;; *) dir="/tmp/vssh/$rel" ;; esac
+mkdir -p "$dir"
+exec cp -f "$src" "$dir/"
 STUB
 printf '#!/bin/sh\nexit 0\n' >"$FS/bun"
 chmod +x "$FS"/*
@@ -371,8 +372,8 @@ chk "device install exits 0" "$?" "0"
 chk "device install: no rebuild for a local artifact" "$(grep -c 'cross-compiling' /tmp/vssh-install.log)" "0"
 chk "device install: uploads the tool (install + verify) and the artifact" \
 	"$(grep -c '^scp -P 8022' /tmp/vssh.log)" "3"
-grep -q "^scp .*out/pi_natives\.android-arm64\.node user@device:" /tmp/vssh.log &&
-	ok "device install: the artifact goes to the device scratch" || no "device install: artifact not uploaded"
+grep -q "^scp .*out/pi_natives\.android-arm64\.node user@device:~/.cache/omp-termux/$" /tmp/vssh.log &&
+	ok "device install: the artifact goes to ~/.cache/omp-termux (no XDG anywhere)" || no "device install: artifact not uploaded to the default scratch"
 chk "device install: the device ends up with the addon" \
 	"$(ls "$TS/.bun/install/global/node_modules/@oh-my-pi/pi-natives/native" | tr '\n' ' ')" "pi_natives.android-arm64.node "
 chk "device install: the device keeps the tool" "$([ -f "$TS/.local/opt/omp-termux/bin/omp-termux" ] && echo yes)" "yes"
@@ -384,6 +385,19 @@ chk "device status exits 0" "$?" "0"
 grep -q "tool       : /tmp/vssh/.cache/omp-termux/omp-termux" /tmp/vssh-status.log &&
 	ok "device status: ran the uploaded copy on the device" || no "device status: did not reach the device"
 grep -q 'omp-termux\\ status' /tmp/vssh.log && ok "device status: ran the uploaded tool there" || no "device status: never asked the device"
+
+echo "== the build half's upload scratch: OMP_TERMUX_CACHE_HOME moves it"
+: >/tmp/vssh.log
+rm -rf "$TS/.cache/omp-termux"
+HOME="$TW" XDG_CONFIG_HOME="$TW/.config" OMP_TERMUX_HOST=user@device OMP_TERMUX_PORT=8022 \
+	OMP_TERMUX_CACHE_HOME="$TS/scratch-abs" PATH="$FS:$PATH" bash "$R/dev/omp-termux-dev" status >/tmp/vssh-status2.log 2>&1
+chk "scratch override: exits 0" "$?" "0"
+sed 's/\\//g' /tmp/vssh.log | grep -q "mkdir -p $TS/scratch-abs" && ok "scratch override: the absolute value is used as it stands" ||
+	no "scratch override: did not ask for that directory"
+grep -q "^scp .*user@device:$TS/scratch-abs/$" /tmp/vssh.log && ok "scratch override: the tool is uploaded there" ||
+	no "scratch override: uploaded to the wrong directory"
+chk "scratch override: the default scratch stays untouched" "$([ -d "$TS/.cache/omp-termux" ] && echo present || echo gone)" "gone"
+chk "scratch override: removed afterwards" "$([ -d "$TS/scratch-abs" ] && echo present || echo gone)" "gone"
 
 echo "== XDG roots (BUN_INSTALL / XDG_CACHE_HOME / ~/.bun)"
 TX=/tmp/verify-xdg; FX=/tmp/verify-xbin; RX=/tmp/verify-xrel
@@ -410,6 +424,74 @@ HOME=$TX XDG_CACHE_HOME="$TX/.cache" TMPDIR=$TX/tmp PREFIX=$TX/usr XDG_CONFIG_HO
 chk "XDG root: install uses the version it should" "$(grep -c "fetching pi-natives $V2" /tmp/verify-xdg.log)" "1"
 [ -f "$XPKG/native/pi_natives.android-arm64.node" ] && ok "XDG root: addon lands in the package in use" || no "XDG root: addon missing from the package in use"
 [ -d "$LEGR/install/cache/@oh-my-pi/pi-natives@$V0@@@1" ] && no "XDG root: old-root copy not reclaimed" || ok "XDG root: old-root copy reclaimed by the rules"
+
+echo "== the resolved environment: the tool and its device probes agree, and a relative path is not one"
+# The build half has the device evaluate the tool's own root rule (REMOTE_ROOT_PROBE) before it can run
+# anything there; drift between the two is invisible until install acts on the wrong root, so every layout is
+# compared. A relative XDG value (which bun refuses outright) must fall through to an absolute path instead
+# of becoming one, and the tool's scratch must follow the XDG cache directory.
+XR=/tmp/verify-roots
+case "$XR" in /tmp/*) ;; *) echo "verify: refusing to touch $XR" >&2; exit 1 ;; esac
+rm -rf "$XR"
+mkdir -p "$XR/usr/bin" "$XR/tmp" "$XR/.config"
+for r in "$XR/.bun" "$XR/.cache/.bun" "$XR/bi" "$XR/elsewhere/.cache/.bun"; do
+	mkdir -p "$r/install/global/node_modules/@oh-my-pi/pi-coding-agent" "$r/install/global/node_modules/@oh-my-pi/pi-natives/native"
+	printf '{"name":"@oh-my-pi/pi-coding-agent","version":"9.9.9"}' >"$r/install/global/node_modules/@oh-my-pi/pi-coding-agent/package.json"
+	pkg_json "$V0" >"$r/install/global/node_modules/@oh-my-pi/pi-natives/package.json"
+done
+printf '%s' "$S0" >"$XR/adon.node"
+PROBE=$(sed -n "s/^REMOTE_ROOT_PROBE='\(.*\)'\$/\1/p" "$R/bin/omp-termux")
+[ -n "$PROBE" ] && ok "the tool still carries the root probe" || no "the root probe moved (the harness reads REMOTE_ROOT_PROBE)"
+probe_root() { # $1 = home, rest = env assignments
+	local home="$1"
+	shift
+	env -i HOME="$home" "$@" PATH="$PATH" sh -c "$PROBE; printf '%s' \"\$r\""
+}
+tool_root() { # $1 = home, rest = env assignments
+	local home="$1"
+	shift
+	env -i HOME="$home" "$@" PATH="$PATH" bash -c "source '$R/bin/omp-termux'; printf '%s\n' \"\$BUN_HOME\""
+}
+tool_cache() { # $1 = home, rest = env assignments; the tool's own scratch answer
+	local home="$1"
+	shift
+	env -i HOME="$home" "$@" PATH="$PATH" bash -c "source '$R/bin/omp-termux'; printf '%s\n' \"\$CACHE_HOME\""
+}
+roots_case() { # $1 = home, $2 = label, rest = env assignments for both sides
+	local home="$1" label="$2" p t
+	shift 2
+	p=$(probe_root "$home" "$@")
+	t=$(tool_root "$home" "$@")
+	chk "$label: the root probe agrees with the tool" "$p" "$t"
+	case "$t" in /*) ;; *) no "$label: the root in use is not absolute ($t)" ;; esac
+}
+roots_case "$XR" "no XDG at all (XDG-era root and legacy root both carry omp)"
+chk "no XDG at all: bun's own root wins over the XDG-era leftover" "$(tool_root "$XR")" "$XR/.bun"
+mkdir -p "$XR/home2/.cache/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent"
+printf '{"name":"@oh-my-pi/pi-coding-agent","version":"9.9.9"}' >"$XR/home2/.cache/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/package.json"
+roots_case "$XR/home2" "only the XDG-era root exists"
+chk "only the XDG-era root exists: it is the root in use" "$(tool_root "$XR/home2")" "$XR/home2/.cache/.bun"
+roots_case "$XR" "XDG_CACHE_HOME set" XDG_CACHE_HOME="$XR/.cache"
+roots_case "$XR" "XDG_CACHE_HOME exported empty" XDG_CACHE_HOME=
+roots_case "$XR" "BUN_INSTALL set" BUN_INSTALL="$XR/bi"
+chk "BUN_INSTALL: the root in use is that root" "$(tool_root "$XR" BUN_INSTALL="$XR/bi")" "$XR/bi"
+chk "XDG_CACHE_HOME: the scratch follows it" "$(tool_cache "$XR" XDG_CACHE_HOME="$XR/cache2")" "$XR/cache2/omp-termux"
+chk "OMP_TERMUX_CACHE_HOME wins over XDG" "$(tool_cache "$XR" OMP_TERMUX_CACHE_HOME="$XR/mine" XDG_CACHE_HOME="$XR/cache2")" "$XR/mine"
+chk "relative XDG_CACHE_HOME: falls through to bun's own root" "$( cd "$XR/elsewhere" && tool_root "$XR" XDG_CACHE_HOME=.cache )" "$XR/.bun"
+chk "relative XDG_CACHE_HOME: the root probe agrees" \
+	"$( cd "$XR/elsewhere" && probe_root "$XR" XDG_CACHE_HOME=.cache )" "$( cd "$XR/elsewhere" && tool_root "$XR" XDG_CACHE_HOME=.cache )"
+chk "relative XDG_CACHE_HOME: the scratch is absolute too" \
+	"$( cd "$XR/elsewhere" && tool_cache "$XR" XDG_CACHE_HOME=.cache )" "$XR/.cache/omp-termux"
+chk "relative OMP_TERMUX_CACHE_HOME: ignored" "$(tool_cache "$XR" OMP_TERMUX_CACHE_HOME=mine)" "$XR/.cache/omp-termux"
+( cd "$XR/elsewhere" && env -i HOME="$XR" XDG_CACHE_HOME=.cache TMPDIR="$XR/tmp" PREFIX="$XR/usr" XDG_CONFIG_HOME="$XR/.config" \
+	TERMUX_VERSION=0.118 OMP_TERMUX_NO_UPDATE_CHECK=1 PATH="$PATH" bash "$R/bin/omp-termux" install "$XR/adon.node" ) >/tmp/verify-relroot.log 2>&1
+chk "relative XDG_CACHE_HOME: install exits 0" "$?" "0"
+[ -f "$XR/.bun/install/global/node_modules/@oh-my-pi/pi-natives/native/pi_natives.android-arm64.node" ] &&
+	[ -f "$XR/.cache/.bun/install/global/node_modules/@oh-my-pi/pi-natives/native/pi_natives.android-arm64.node" ] &&
+	ok "relative XDG_CACHE_HOME: the addon lands in every root that exists" || no "relative XDG_CACHE_HOME: addon missing from a root"
+[ -f "$XR/elsewhere/.cache/.bun/install/global/node_modules/@oh-my-pi/pi-natives/native/pi_natives.android-arm64.node" ] &&
+	no "relative XDG_CACHE_HOME: the decoy under the current directory took the addon" ||
+	ok "relative XDG_CACHE_HOME: the decoy under the current directory was left alone"
 
 echo "== BUN_INSTALL wins over both default roots"
 BI="$TX/bi"
@@ -488,7 +570,7 @@ grep -q "install -g @oh-my-pi/pi-coding-agent@$V2" "$TF/bun.log" && ok "fresh de
 fi
 
 if [ "$fail" = 0 ]; then
-	rm -rf "$T" "$FB" "$RAW" "$R19" "$R20" "$LOG" "$TW" "$FSW" "$TX" "$FX" "$RX" "$TF" "$FF" "$RF" "$FW" "$TM" /tmp/verify-xdg.log /tmp/verify-bi.log /tmp/verify-fresh.log /tmp/vmismatch.log
+	rm -rf "$T" "$FB" "$RAW" "$R19" "$R20" "$LOG" "$TW" "$FSW" "$TX" "$FX" "$RX" "$XR" "$TF" "$FF" "$RF" "$FW" "$TM" /tmp/verify-xdg.log /tmp/verify-bi.log /tmp/verify-fresh.log /tmp/verify-relroot.log /tmp/vmismatch.log
 else
 	echo "  (failed: scene kept under /tmp/verify-*)"
 fi

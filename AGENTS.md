@@ -24,9 +24,10 @@ Two bash scripts do the work: one for the device, one for building the addon.
   `status`, `verify`, `device`, `doctor`.
 - Device access (workstation): `device` saves a target (`OMP_TERMUX_HOST`/`OMP_TERMUX_PORT` win over
   `~/.config/omp-termux/config`, the port also via `ssh -G`), `install` resolves what to install, builds when
-  `out/` does not already hold it, uploads the artifact and `$SELF` (the tool) into `~/$SCRATCH`, runs the tool
-  there, and verifies on the device; `status`/`verify` are the same round trip
-  without changing anything. These verbs refuse in device mode.
+  `out/` does not already hold it, uploads the artifact and `$SELF` (the tool) into its own scratch on the
+  device (`OMP_TERMUX_CACHE_HOME`, else `~/.cache/omp-termux`, both relative to the device's `$HOME`), runs the
+  tool there, and verifies on the device; `status`/`verify` are the same round trip without changing anything.
+  These verbs refuse in device mode.
 - Build path (workstation or CI): `workstation_build` → `fetch_source` (clone `UPSTREAM` at tag `v<version>` into
   `work/src`) → `ensure_rust_target` → `apply_patch` (vendored `patches/*.patch`, else the PR diff from the
   network) → `install_build_deps` → `prepare_opus` → `cross_build` (napi-rs CLI, `--profile ci`,
@@ -37,15 +38,17 @@ Two bash scripts do the work: one for the device, one for building the addon.
 - Install path (device): `device_install` → `link_global_tree` (Termux bun-layout repair) → `fetch_release` (or a
   local `.node`) → `install_addon` (`cp` into every matching `@oh-my-pi/pi-natives/native/`, skipping version
   mismatches) → `run_verify` (loads `native/index.js` through bun and checks the expected export set) →
-  `cmd_install_self` (the tool puts its own copy at `$PREFIX/bin/omp-termux` and links it into `$BINDIR`, which is
-  what makes the next run able to self-update; it is a step of `install`, not a verb).
+  `cmd_install_self` (the tool puts its own copy at `$PREFIX/bin/omp-termux` and links it into `$BIN_HOME`, which
+  is what makes the next run able to self-update; it is a step of `install`, not a verb).
 - CI (`.github/workflows/build.yml`) runs exactly `./dev/omp-termux-dev build "$VERSION"` and publishes release
   `omp-<version>` carrying `out/pi_natives.android-arm64.node`; the adapter the package loads is the package's
   own, because the addon only lands in the package whose version it reports.
 - `install`, `status`, `verify` and `doctor` act on the pi-natives of the machine that runs them, so they are
   device verbs; `help` and the self-management verbs (`update-self`, `uninstall-self`) work anywhere. Building
-  lives in the other half. Scratch downloads live in
-  `$HOME/.cache/omp-termux` on the device; `work/` and `out/` are gitignored local state.
+  lives in the other half. The tool's own scratch is `$CACHE_HOME` (`OMP_TERMUX_CACHE_HOME`, else
+  `$XDG_CACHE_HOME/omp-termux`, else `~/.cache/omp-termux`) and the build half uploads into its own
+  `$SCRATCH`: with nothing set both are `~/.cache/omp-termux`, which is what the majority of devices (no XDG
+  anywhere) use, and each side removes its own afterwards. `work/` and `out/` are gitignored local state.
 
 ## Key Directories
 
@@ -99,9 +102,9 @@ OMP_TERMUX_MODE=device ./dev/omp-termux-dev build   # native build on the phone:
 - Idempotency is a requirement, not a nicety: `cmd_install_self` skips copying onto itself, `link_global_tree`
   only refreshes symlinks and never clobbers real directories, `apply_patch` greps for its marker, `update-self`
   runs `bash -n` + sha256 + `mv` before replacing.
-- Environment inputs are `OMP_TERMUX_*`: `REPO`, `RELEASE_BASE`, `RAW_BASE`, `VERSION`, `NO_UPDATE_CHECK`,
-  `UPDATE_TTL` for the tool, `NDK`, `MODE` and `HOST`/`PORT` (the ssh target) for the build half; the device
-  must never need an export to work — defaults cover it.
+- Environment inputs are `OMP_TERMUX_*`: `REPO`, `RELEASE_BASE`, `RAW_BASE`, `CACHE_HOME` (the scratch
+  directory), `VERSION`, `NO_UPDATE_CHECK`, `UPDATE_TTL` for the tool, `NDK`, `MODE` and `HOST`/`PORT` (the
+  ssh target) for the build half; the device must never need an export to work — defaults cover it.
 - Argument hygiene: `reject_option` rejects a leading `-` for `install` (the tool) and `build` (the build half),
   and names the running script through `$PROG`. Extending option parsing means extending those checks.
 - `check_self_update` runs before every verb except `help` and `update-self`, and only when the running file is
@@ -127,7 +130,7 @@ OMP_TERMUX_MODE=device ./dev/omp-termux-dev build   # native build on the phone:
 ## Important Files
 
 - `bin/omp-termux` globals (near the top): `TERMUX_PREFIX` is captured **before** `PREFIX` is reused as the
-  tool's own prefix (reordering breaks device install paths); `SCRATCH` is relative to `$HOME` on the device;
+  tool's own prefix (reordering breaks device install paths);
   `ADDON=pi_natives.android-arm64.node` is the loader-visible name used by install/fetch/verify (and by the
   build half); `PROG` names the script in hints, `UPSTREAM_REPO` is the upstream owner/repo as a literal (the git
   URL lives in the build half), `REPO` this repository.
@@ -136,9 +139,13 @@ OMP_TERMUX_MODE=device ./dev/omp-termux-dev build   # native build on the phone:
 - `bin/omp-termux`'s own identity and update state: `TOOL_VERSION` (a human label only — every
   comparison reads the content hash, so nothing pins its value), `SELF_URL` (raw `main`, shared with `cmd_update_self`), `SELF_CACHE`
   (`$PREFIX/cache/self-update`, removed by `uninstall-self` together with the prefix) and `SELF_TTL`.
-- Environment resolution lives in one place: `bun_root` (bun's rule for a *new* root), `bun_roots`,
-  `bun_active_root` (the root in use), `use_root`, `omp_path`. Installing, version lookup and the smoke test
-  read these.
+- Environment resolution happens once, in `resolve_env`: it sets the variables every verb reads — `BUN_HOME`
+  (the root in use), `BUN_ROOTS`, `BUN_DEFAULT` (bun's rule for a *new* root), `BUN_BIN`, `OMP_BIN`, `BIN_HOME`,
+  `CACHE_HOME` and `TMP_HOME` — from the rules above it (`absolute_dir`, `bun_default_root`,
+  `existing_bun_roots`, `bun_root_in_use`, `bin_home_dir`, `cache_home_dir`, `bun_binary_path`,
+  `omp_binary_path`, `tmp_dir`). `use_root` pins the shell at `$BUN_HOME`; installing bun or omp calls
+  `resolve_env` again. Nothing below re-derives any of it. `REMOTE_ROOT_PROBE` is the POSIX twin of the root
+  rule, which the build half has the device evaluate before it can run anything there.
 - Key functions, tool: `usage`, `install_addon`, `link_global_tree`, `fetch_release`, `device_install`,
   `run_verify`, `installed_state`/`newest_natives_dir` (what the device actually loads), `check_self_update`,
   `cache_get`/`cache_put`, `print_status`, `cmd_install_self`, `cmd_update_self`,
@@ -184,10 +191,14 @@ OMP_TERMUX_MODE=device ./dev/omp-termux-dev build   # native build on the phone:
   lookup order: `OMP_TERMUX_NDK` → `ANDROID_NDK_ROOT` → `ANDROID_NDK_HOME` → `ANDROID_NDK_LATEST_HOME` →
   `$ANDROID_HOME/ndk/*` (newest) → `/opt/android-ndk`; the host dir `toolchains/llvm/prebuilt/linux-x86_64` is
   hard-coded.
-- bun's install root is resolved in one place (`bun_root`, `bun_roots`) and must never be hard-coded: it is
-  `BUN_INSTALL`, else `$XDG_CACHE_HOME/.bun` when that variable is set, else `~/.bun`. Everything that touches
-  the cache, the global tree or a bun binary goes through those helpers, and every root that exists is visited
-  (a device that starts using XDG keeps a legacy `~/.bun` next to the new one).
+- bun's install root is resolved in one place (`resolve_env`, its rules above it) and must never be hard-coded:
+  it is `BUN_INSTALL`, else `$XDG_CACHE_HOME/.bun` when that variable is set, else `~/.bun`. Everything that
+  touches the global tree, this tool's own directories or a bun binary goes through `resolve_env` and the
+  variables it sets, and every root that exists is visited in bun's own rule order: the XDG-era leftover
+  `$HOME/.cache/.bun`, which bun reaches only through `XDG_CACHE_HOME`, comes last, so an unset
+  `XDG_CACHE_HOME` leaves `~/.bun` in use even when that leftover carries omp too. A relative `BUN_INSTALL`,
+  `XDG_CACHE_HOME`, `XDG_BIN_HOME` or `OMP_TERMUX_CACHE_HOME` is not a path any tool could use (bun's own
+  global install dies with `EACCES`) and is ignored, in the tool and in the device probes alike.
 - Rust channel and `@napi-rs/cli` version come from the upstream clone (`rust-toolchain.toml`,
   `package.json`) — never pin them here. CI pins `bun-version: 1` only.
 - No package manager, lockfile, linter or formatter in this repo; no JS/TS sources of its own.
@@ -211,8 +222,9 @@ OMP_TERMUX_MODE=device ./dev/omp-termux-dev build   # native build on the phone:
   nothing, while one that needs a download but has no release exits non-zero, calls no `bun install -g`, and
   prints `nothing was changed`; a device ahead of everything published here exits non-zero and leaves the addon
   untouched; an addon that reports another version is rejected; repeated installs stay idempotent;
-  the device end state is the addon plus `~/.local/opt/omp-termux` plus one symlink (`$PREFIX/bin/omp-termux` on
-  Termux, `~/.local/bin` otherwise) and nothing else; `update-self` refuses a script that fails `bash -n` and
+  the device end state is the addon plus `~/.local/opt/omp-termux` plus one symlink (`$BIN_HOME`: `$PREFIX/bin`
+  on Termux, else `$XDG_BIN_HOME` or `~/.local/bin`) and nothing else; `update-self` refuses a script that
+  fails `bash -n` and
   keeps the old copy, and drops the self-update cache so the next verb re-checks.
 - The self-update check is asserted through a stubbed `curl` that logs every call: one stderr line when `main`
   differs and none when it matches, no request at all while the cache is fresh or when
@@ -220,6 +232,12 @@ OMP_TERMUX_MODE=device ./dev/omp-termux-dev build   # native build on the phone:
 - The device access is asserted with stubbed `ssh`/`scp` that log every call and run the command line against a
   fake device HOME: the artifact and the tool are uploaded, the tool installs them there, the
   scratch dir is gone afterwards, and `status` asks the device rather than acting locally.
+- The resolved environment is asserted on every layout (no XDG, XDG set, XDG exported empty, `BUN_INSTALL`,
+  and relative `XDG_CACHE_HOME`/`OMP_TERMUX_CACHE_HOME` values): the root probe must print what the tool's
+  `$BUN_HOME` holds, its `$CACHE_HOME` must follow the XDG cache dir (and ignore a relative value), bun's own
+  root must win over the XDG-era leftover, and an install must not take the addon into a decoy the current
+  directory happens to hold. The build half's own `$SCRATCH` is asserted through the stubbed `ssh`/`scp` log:
+  `~/.cache/omp-termux` by default, `OMP_TERMUX_CACHE_HOME` when the caller sets it.
 - Not verifiable without real hardware: bun's global layout behaviour on Android (the `link_global_tree` repair),
   the NDK cross-build, the real ssh transport, and anything touching `pkg`/`termux-*`.
 - Doc statements are the user-visible contract — `README.md` must stay true: the install prose and the command
