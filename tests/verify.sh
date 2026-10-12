@@ -25,6 +25,7 @@ python3 -c "import yaml,pathlib;yaml.safe_load(pathlib.Path('$R/.github/workflow
 bash "$R/bin/omp-termux" bogus >/dev/null 2>&1; chk "unknown verb exits 1" "$?" "1"
 bash "$R/bin/omp-termux" install --help >/dev/null 2>&1; chk "install --help refused" "$?" "1"
 bash "$R/bin/omp-termux" verify --help >/dev/null 2>&1; chk "verify --help refused" "$?" "1"
+bash "$R/bin/omp-termux" status --json >/dev/null 2>&1; chk "status --json refused" "$?" "1"
 
 if [ ! -f "$R/out/pi_natives.android-arm64.node" ]; then
 	echo "== skipping the device sections (no out/pi_natives.android-arm64.node; run ./dev/omp-termux-dev build <version> first)"

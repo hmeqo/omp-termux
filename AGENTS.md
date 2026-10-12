@@ -105,8 +105,9 @@ OMP_TERMUX_MODE=device ./dev/omp-termux-dev build   # native build on the phone:
 - Environment inputs are `OMP_TERMUX_*`: `REPO`, `RELEASE_BASE`, `RAW_BASE`, `CACHE_HOME` (the scratch
   directory), `VERSION`, `NO_UPDATE_CHECK`, `UPDATE_TTL` for the tool, `NDK`, `MODE` and `HOST`/`PORT` (the
   ssh target) for the build half; the device must never need an export to work — defaults cover it.
-- Argument hygiene: `reject_option` rejects a leading `-` for `install` (the tool) and `build` (the build half),
-  and names the running script through `$PROG`. Extending option parsing means extending those checks.
+- Argument hygiene: `reject_option` rejects a leading `-` — for `install` (the tool) and `build` (the build half),
+  where an argument is expected at all, and for every verb that takes none, so `status --json` is an error and
+  not a silent `status`. It names the running script through `$PROG`.
 - `check_self_update` runs before every verb except `help` and `update-self`, and only when the running file is
   the installed copy. It compares the content hash of `main` (conditional GET, `ETag`) with its own, caches the
   result for `OMP_TERMUX_UPDATE_TTL` seconds under `$PREFIX/cache/self-update` so most verbs never talk to the
