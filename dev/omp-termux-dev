@@ -235,7 +235,8 @@ cross_build() {
 	local tc="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
 	ndk_ok || die "NDK incomplete, run 'omp-termux-dev doctor' first"
 	mkdir -p "$OUT"
-	rm -f "$OUT/$ADDON"
+	rm -rf "$OUT/.build"
+	mkdir -p "$OUT/.build"
 	msg "cross-compiling aarch64-linux-android (API $API)"
 	(
 		cd "$SRC/packages/natives"
@@ -254,7 +255,7 @@ cross_build() {
 			--package-json-path "$SRC/packages/natives/package.json" \
 			--target aarch64-linux-android \
 			--no-js --dts index.d.ts \
-			-o "$OUT" --profile ci
+			-o "$OUT/.build" --profile ci
 	) || die "cross-compilation failed"
 	finalize_artifact
 }
@@ -271,14 +272,15 @@ stamp_artifact() {
 }
 
 # The loader looks for pi_natives.<platform>-<arch>.node, while @napi-rs/cli --target emits a bare name.
+# The build stages into out/.build, so what lands here is this run's link and never a file out/ already held:
+# a stale $ADDON must not be re-stamped as the version just built.
 finalize_artifact() {
 	local produced
-	if [ ! -f "$OUT/$ADDON" ]; then
-		produced="$(find "$OUT" -maxdepth 1 -name 'pi_natives*.node' | head -n1)"
-		[ -n "$produced" ] || die "build finished but produced no addon"
-		msg "renaming $(basename "$produced") -> $ADDON"
-		mv "$produced" "$OUT/$ADDON"
-	fi
+	produced="$(find "$OUT/.build" -maxdepth 1 -name 'pi_natives*.node' | head -n1)"
+	[ -n "$produced" ] || die "build finished but produced no addon"
+	msg "renaming $(basename "$produced") -> $ADDON"
+	mv -f "$produced" "$OUT/$ADDON"
+	rm -rf "$OUT/.build"
 	stamp_artifact
 }
 

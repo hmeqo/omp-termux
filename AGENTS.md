@@ -31,8 +31,8 @@ Two bash scripts do the work: one for the device, one for building the addon.
 - Build path (workstation or CI): `workstation_build` → `fetch_source` (clone `UPSTREAM` at tag `v<version>` into
   `work/src`) → `ensure_rust_target` → `apply_patch` (vendored `patches/*.patch`, else the PR diff from the
   network) → `install_build_deps` → `prepare_opus` → `cross_build` (napi-rs CLI, `--profile ci`,
-  `aarch64-linux-android`) → `finalize_artifact` (`stamp_artifact`, then rename the bare `pi_natives*.node` to
-  `$ADDON`) → `verify_artifact "$version"`.
+  `aarch64-linux-android`, into the `out/.build` staging dir) → `finalize_artifact` (move this run's link from
+  there to `$ADDON`, then `stamp_artifact`) → `verify_artifact "$version"`.
 - Build path (device, hours): `device_build` builds through upstream's `packages/natives/scripts/build-bindings.ts`
   and leaves the addon in `work/`, which is what a device `install` reads.
 - Install path (device): `device_install` → `link_global_tree` (Termux bun-layout repair) → `fetch_release` (or a
