@@ -115,11 +115,25 @@ cat >"$FB/bun" <<EOS
 #!/bin/sh
 echo "bun \$* BUN_INSTALL=\${BUN_INSTALL:-unset}" >>"$LOG"
 [ -f "$T/bunfail" ] && exit 1
+# The real loader rejects a tree that holds no addon for this platform; a tree that has one loads here.
+case "\${2:-}" in
+	*/native/index.js) [ -f "\${2%/native/index.js}/native/pi_natives.android-arm64.node" ] || exit 1 ;;
+esac
 if [ "\$1" = install ] && [ "\$2" = -g ]; then
 	v="\${3#@oh-my-pi/pi-coding-agent@}"
-	p="\${BUN_INSTALL:-$T/.bun}/install/cache/@oh-my-pi/pi-natives@\$v@@@1"
+	root="\${BUN_INSTALL:-$T/.bun}"
+	p="\$root/install/cache/@oh-my-pi/pi-natives@\$v@@@1"
 	mkdir -p "\$p/native"
 	echo "{\\"name\\":\\"@oh-my-pi/pi-natives\\",\\"version\\":\\"\$v\\"}" >"\$p/package.json"
+	# A device that already carries bun's global layout gets it rewritten at the version asked for; one
+	# modelled without a global tree keeps the cache-only behaviour above.
+	if [ -d "\$root/install/global/node_modules/@oh-my-pi" ]; then
+		for pkg in pi-coding-agent pi-natives; do
+			g="\$root/install/global/node_modules/@oh-my-pi/\$pkg"
+			mkdir -p "\$g/native"
+			echo "{\\"name\\":\\"@oh-my-pi/\$pkg\\",\\"version\\":\\"\$v\\"}" >"\$g/package.json"
+		done
+	fi
 fi
 exit 0
 EOS
@@ -141,6 +155,7 @@ chk "bootstrap: without bash exits !=0" "$(nonzero $?)" "non0"
 grep -q 'install: bash is required' /tmp/v7.log && ok "bootstrap: says bash is required" || no "bootstrap: silent about bash"
 
 CACHE="$T/.local/opt/omp-termux/cache/self-update"
+GLOBAL="$T/.bun/install/global/node_modules/@oh-my-pi"   # bun's global tree in the fake device
 dev() { # $1 = release base, $2 = verb, $3 = argument, $4 = OMP_TERMUX_NO_UPDATE_CHECK
 	(
 		HOME=$T; TMPDIR=$T/tmp; PREFIX=$T/usr; XDG_CONFIG_HOME=$T/.config; XDG_CACHE_HOME=$T/.cache
@@ -158,6 +173,18 @@ grep -q 'nothing to do' /tmp/v2.log && ok "install (no argument): already at the
 	{ no "install (no argument) does not say nothing to do"; tail -3 /tmp/v2.log | sed 's|^|       |'; }
 chk "install (no argument): nothing to do comes last" "$(tail -n1 /tmp/v2.log | grep -c 'nothing to do')" "1"
 chk "install (no argument): does not re-link an existing link" "$(grep -c 'linked ' /tmp/v2.log)" "0"
+
+# A kept scope entry does not change what the device loads today, but it would shadow the CLI's pins on the
+# next hand upgrade; the verb drops it even when it has nothing else to do.
+mkdir -p "$T/.bun/install/global"
+printf '{"dependencies":{"@oh-my-pi/pi-coding-agent":"%s","@oh-my-pi/pi-natives":"^%s"}}' "$V0" "$V2" >"$T/.bun/install/global/package.json"
+: >"$LOG"
+dev "file://$R19" install >/tmp/vkeep.log 2>&1; chk "kept entry: exits 0" "$?" "0"
+grep -q 'nothing to do' /tmp/vkeep.log && ok "kept entry: still nothing to do" || { no "kept entry: no skip"; tail -3 /tmp/vkeep.log | sed 's|^|       |'; }
+grep -q 'dropping the stale global entries: @oh-my-pi/pi-natives' /tmp/vkeep.log &&
+	ok "kept entry: dropped anyway" || { no "kept entry: left in the manifest"; tail -3 /tmp/vkeep.log | sed 's|^|       |'; }
+chk "kept entry: bun is asked to remove it" "$(grep -c 'remove -g @oh-my-pi/pi-natives' "$LOG")" "1"
+rm -f "$T/.bun/install/global/package.json"
 
 fake_curl "$FB/curl" "$V1" "$V1"   # this repository publishes $V1 now, which $R20 serves
 : >"$LOG"; rm -f "$CACHE"
@@ -206,7 +233,10 @@ grep -q "the downloaded addon is for $V0, not $V1" /tmp/vwrong.log && ok "names 
 chk "wrong release: bun not called" "$(grep -c 'install -g' "$LOG" 2>/dev/null || true)" "0"
 
 # The device carries a version this repository never published (omp upgraded by hand): refuse, touch nothing.
-mkdir -p "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V2@@@1/native"
+# A hand-upgraded omp sits under bun's global tree; the cache keeps the copy bun resolved for it.
+mkdir -p "$GLOBAL/pi-natives/native" "$GLOBAL/pi-coding-agent" "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V2@@@1/native"
+pkg_json "$V2" >"$GLOBAL/pi-natives/package.json"
+pkg_json "$V2" >"$GLOBAL/pi-coding-agent/package.json"
 pkg_json "$V2" >"$T/.bun/install/cache/@oh-my-pi/pi-natives@$V2@@@1/package.json"
 cp "$R20/pi_natives.android-arm64.node" "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V2@@@1/native/"
 FA="$T/.bun/install/cache/@oh-my-pi/pi-natives@$V2@@@1/native/pi_natives.android-arm64.node"
@@ -235,6 +265,50 @@ grep -q "no build published here" /tmp/vstep.log && no "named version: still ref
 chk "named version: installs the version asked for" "$(grep -o "install -g @oh-my-pi/pi-coding-agent@$V1" "$LOG" | head -1)" "install -g @oh-my-pi/pi-coding-agent@$V1"
 chk "named version: addon lands in that package" "$(ls "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V1@@@1/native" 2>/dev/null | tr '\n' ' ')" "pi_natives.android-arm64.node "
 rm -rf "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V2@@@1"   # later sections expect $V0/$V1 only
+
+# A global pi-natives left over from an older install: bun keeps that manifest entry and hoists the newest
+# version its range allows, so the tree resolves to a release this repository never built while the omp the
+# device runs is the published one. The tool has to bring that tree back to the published version instead of
+# reading it as a device ahead of us, and the leftover copy must not decide the load test.
+mkdir -p "$GLOBAL/pi-natives/native" "$GLOBAL/pi-coding-agent" "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V2@@@1/native"
+pkg_json "$V2" >"$GLOBAL/pi-natives/package.json"
+pkg_json "$V0" >"$GLOBAL/pi-coding-agent/package.json"
+pkg_json "$V2" >"$T/.bun/install/cache/@oh-my-pi/pi-natives@$V2@@@1/package.json"
+{
+	printf '{\n  "dependencies": {\n'
+	printf '    "@oh-my-pi/pi-coding-agent": "%s",\n' "$V0"
+	printf '    "@oh-my-pi/pi-natives": "^%s",\n' "$V2"
+	printf '    "@oh-my-pi/pi-utils": "^%s"\n' "$V2"
+	printf '  }\n}\n'
+} >"$T/.bun/install/global/package.json"
+fake_curl "$FB/curl" "$V1" "$V0"   # this repository's newest build is $V0, which $R19 serves
+: >"$LOG"
+dev "file://$R19" install latest >/tmp/vstale.log 2>&1
+chk "stale tree: exits 0" "$?" "0"
+grep -q 'no build published here' /tmp/vstale.log && no "stale tree: refused as a device ahead" ||
+	ok "stale tree: not refused as a device ahead"
+grep -q "the global tree resolves $V2; bringing it back to $V0" /tmp/vstale.log &&
+	ok "stale tree: says it is bringing the tree back" || { no "stale tree: silent about the tree"; tail -3 /tmp/vstale.log | sed 's|^|       |'; }
+grep -q 'dropping the stale global entries: @oh-my-pi/pi-natives @oh-my-pi/pi-utils' /tmp/vstale.log &&
+	ok "stale tree: names every entry it drops" || { no "stale tree: silent about the entries"; tail -3 /tmp/vstale.log | sed 's|^|       |'; }
+chk "stale tree: bun drops the kept entries" "$(grep -c 'remove -g .*pi-natives.*pi-utils' "$LOG")" "1"
+chk "stale tree: bun installs the CLI at the published version" \
+	"$(grep -o "install -g @oh-my-pi/pi-coding-agent@$V0" "$LOG" | head -1)" "install -g @oh-my-pi/pi-coding-agent@$V0"
+chk "stale tree: writes no entry of our own" "$(grep -c 'install -g.*pi-natives@' "$LOG")" "0"
+chk "stale tree: the tree omp loads becomes $V0" \
+	"$(python3 -c "import json;print(json.load(open('$GLOBAL/pi-natives/package.json'))['version'])")" "$V0"
+chk "stale tree: the addon lands in the tree omp loads" "$(ls "$GLOBAL/pi-natives/native" | tr '\n' ' ')" "pi_natives.android-arm64.node "
+grep -q "load failed (not the pi-natives this device loads): .*pi-natives@$V2@@@1" /tmp/vstale.log &&
+	ok "stale tree: the leftover copy is reported, not fatal" || { no "stale tree: no word about the leftover"; grep 'loading through' /tmp/vstale.log | sed 's|^|       |'; }
+grep -q 'all good' /tmp/vstale.log && ok "stale tree: ends verified" || no "stale tree: never verified"
+: >"$LOG"
+dev "file://$R19" install >/tmp/vstale2.log 2>&1
+chk "stale tree: the second run exits 0" "$?" "0"
+grep -q 'nothing to do' /tmp/vstale2.log && ok "stale tree: the second run is settled" ||
+	{ no "stale tree: the second run still finds work"; tail -3 /tmp/vstale2.log | sed 's|^|       |'; }
+chk "stale tree: the second run leaves bun alone" "$(grep -c 'install -g' "$LOG" 2>/dev/null || true)" "0"
+rm -rf "$GLOBAL" "$T/.bun/install/global/package.json" "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V2@@@1" "$T/.bun/install/cache/node_modules"
+fake_curl "$FB/curl" "$V1" "$V1"   # back to the sections below, which model a cache-only device
 
 chk "update-self on identical content: already up to date" "$(dev "file://$R19" update-self 2>&1 | grep -c 'already up to date')" "1"
 printf '\n# moved on\n' >>"$RAW/bin/omp-termux"

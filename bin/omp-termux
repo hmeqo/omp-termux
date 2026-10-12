@@ -26,7 +26,7 @@ SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 ADDON="pi_natives.android-arm64.node"
 UPSTREAM_REPO="can1357/oh-my-pi"        # upstream project: its newest release has no build here until we build one
 REPO="${OMP_TERMUX_REPO:-hmeqo/omp-termux}"
-TOOL_VERSION=0.4.0                      # a label only: every comparison reads the content hash
+TOOL_VERSION=0.5.0                      # a label only: every comparison reads the content hash
 PROG="omp-termux"                        # names this script in hints; dev/omp-termux-dev overrides it
 SELF_URL="${OMP_TERMUX_RAW_BASE:-https://raw.githubusercontent.com/$REPO/main}/bin/omp-termux"
 SELF_CACHE="$PREFIX/cache/self-update"  # under $PREFIX, so uninstall-self removes it too
@@ -267,19 +267,28 @@ newest_natives_dir() { # $1 = a root prefix, or "" for every root; prints the ne
 	printf '%s\n' "$dir"
 }
 
-installed_state() { # the pi-natives this device loads: sets CUR_VERSION and CUR_ADDON
+installed_state() { # the pi-natives this device loads: sets CUR_VERSION, CUR_ADDON, CUR_DIR, CUR_CLI_VERSION
 	# the running omp resolves the root in use's global tree; a pi-natives in another root is a leftover
-	local root dir
+	local root dir scope cli
 	root="$BUN_HOME"
-	dir="$root/install/global/node_modules/@oh-my-pi/pi-natives"
+	scope="$root/install/global/node_modules/@oh-my-pi"
+	dir="$scope/pi-natives"
 	[ -f "$dir/package.json" ] || dir="$(newest_natives_dir "$root")"
 	[ -n "$dir" ] || dir="$(newest_natives_dir)"
 	CUR_VERSION=""
 	CUR_ADDON=""
+	CUR_DIR=""
 	if [ -n "$dir" ] && [ -f "$dir/package.json" ]; then
 		CUR_VERSION="$(json_version "$dir/package.json")"
 		CUR_ADDON="$dir/native/$ADDON"
+		CUR_DIR="$dir"
 	fi
+	# The omp the device runs, which is not the pi-natives its tree holds: bun can leave the two at different
+	# releases, so the "ahead" guard reads the CLI's own version.
+	CUR_CLI_VERSION=""
+	cli="$scope/pi-coding-agent/package.json"
+	[ -f "$cli" ] && CUR_CLI_VERSION="$(json_version "$cli")"
+	[ -n "$CUR_CLI_VERSION" ] || CUR_CLI_VERSION="$CUR_VERSION"
 }
 
 installed_version() { # the version the root in use carries
@@ -449,6 +458,20 @@ cmd_update_self() {
 }
 
 # --- install: on the device -----------------------------------------------------------------------
+stray_scope_deps() { # the @oh-my-pi entries the global manifest lists besides the CLI, space separated
+	# bun keeps an entry an older install left there and resolves it to the newest version its range allows, so
+	# it hoists a release over the exact pins the CLI carries: on Android the scope then holds a pi-natives with
+	# no addon, and nothing checks the version of the rest.
+	local manifest="$BUN_HOME/install/global/package.json" strays="" name
+	[ -f "$manifest" ] || return 0
+	while IFS= read -r name; do
+		strays="${strays:+$strays }$name"
+	done < <(tr ',' '\n' <"$manifest" |
+		sed -n 's/^[[:space:]]*"\(@oh-my-pi\/[^"]*\)"[[:space:]]*:.*/\1/p' |
+		grep -v '^@oh-my-pi/pi-coding-agent$' || true)
+	printf '%s\n' "$strays"
+}
+
 install_addon() { # $1 = path to a .node
 	local addon="$1" target_version="" n=0 seen="" d v
 	[ -f "$addon" ] || die "no artifact to install: $addon"
@@ -580,7 +603,7 @@ fetch_release() { # $1 = pi-natives version; puts the addon in RELEASE_ADDON, di
 }
 
 device_install() { # $1 = version, "latest", or a path to a .node; no argument = the version this device runs
-	local arg="${1:-}" want current up="" pub="" explicit="" vlog
+	local arg="${1:-}" want current up="" pub="" explicit="" vlog strays
 	link_global_tree
 	if [ -n "$arg" ] && [ -f "$arg" ]; then
 		install_addon "$arg"
@@ -605,6 +628,17 @@ device_install() { # $1 = version, "latest", or a path to a .node; no argument =
 			;;
 		*) explicit=1; want="${arg#v}" ;;
 	esac
+	# A kept entry can sit in the manifest for a whole release without hurting anything: it only decides against
+	# the CLI's pins once it resolves higher than them, which is what a later upgrade does. Drop it however this
+	# verb ends, so what it leaves behind is the manifest a fresh install writes.
+	if [ -n "$BUN_BIN" ]; then
+		strays="$(stray_scope_deps)"
+		if [ -n "$strays" ]; then
+			use_root
+			msg "dropping the stale global entries: $strays"
+			"$BUN_BIN" remove -g $strays || warn "removing $strays from the global manifest failed"
+		fi
+	fi
 	installed_state
 	if [ -n "$pub" ]; then
 		panel_line "newest build here" "omp-$pub"
@@ -629,18 +663,24 @@ device_install() { # $1 = version, "latest", or a path to a .node; no argument =
 	rm -f "$vlog"
 	panel_line "you have" "omp-${CUR_VERSION:-none}$([ -n "$CUR_VERSION" ] && [ ! -f "$CUR_ADDON" ] && echo ' (addon missing)')"
 	# what is published bounds the targets the tool picks itself; a named version is the caller's call
-	if [ -z "$explicit" ] && [ -n "$CUR_VERSION" ] && [ -n "$pub" ] && version_gt "$CUR_VERSION" "$pub"; then
-		die "no build published here for the omp you run: $CUR_VERSION (newest: omp-$pub); nothing was changed
+	if [ -z "$explicit" ] && [ -n "$CUR_CLI_VERSION" ] && [ -n "$pub" ] && version_gt "$CUR_CLI_VERSION" "$pub"; then
+		die "no build published here for the omp you run: $CUR_CLI_VERSION (newest: omp-$pub); nothing was changed
         wait for that build, or step back: bun install -g @oh-my-pi/pi-coding-agent@$pub"
 	fi
 	# Fetch before moving omp: an upgrade without the matching addon in hand leaves omp unable to start.
 	device_ensure_bun || die "cannot install bun; install it by hand: pkg install bun"
 	fetch_release "$want"
 	current="$CUR_VERSION"
-	if [ "$current" != "$want" ]; then
+	if [ "$CUR_CLI_VERSION" != "$want" ] || [ "$current" != "$want" ]; then
 		use_root
 		[ -n "$BUN_BIN" ] || die "bun not found; install it first: pkg install bun"
-		msg "installing omp $want on this device (currently ${current:-none})"
+		if [ "$CUR_CLI_VERSION" != "$want" ]; then
+			msg "installing omp $want on this device (currently ${CUR_CLI_VERSION:-none})"
+		else
+			msg "the global tree resolves ${current:-none}; bringing it back to $want"
+		fi
+		# Naming the package ourselves would leave an entry of exactly the kind that caused this, so nothing but
+		# the CLI is ever named and its own pins decide the whole tree.
 		"$BUN_BIN" install -g "@oh-my-pi/pi-coding-agent@$want" || die "installing omp $want failed"
 		resolve_env      # bun's global tree changed: read the roots again before touching the addon
 	fi
@@ -668,10 +708,20 @@ if (missing.length) { console.error("  missing:", missing.join(", ")); process.e
 console.log("  NATIVE LOAD OK")
 EOF
 	[ -n "$(natives_dirs)" ] || die "no @oh-my-pi/pi-natives on this machine; nothing to verify"
+	# The verdict hangs on the copy omp resolves: bun keeps the copies of other releases it resolved, which
+	# need not carry an addon for this platform, and they are not what this device loads.
+	installed_state
 	while IFS= read -r d; do
 		msg "loading through the loader: $d"
 		[ -n "$BUN_BIN" ] || { warn "bun not found (looked for 'bun' on PATH and under $BUN_DEFAULT); cannot load-test $d"; rc=1; continue; }
-		"$BUN_BIN" "$probe" "$d/native/index.js" || { warn "load failed: $d"; rc=1; }
+		"$BUN_BIN" "$probe" "$d/native/index.js" || {
+			if [ -n "$CUR_DIR" ] && [ "$d" != "$CUR_DIR" ]; then
+				warn "load failed (not the pi-natives this device loads): $d"
+			else
+				warn "load failed: $d"
+				rc=1
+			fi
+		}
 	done < <(natives_dirs)
 	rm -f "$probe"
 	rmdir "$probe_dir" 2>/dev/null || true

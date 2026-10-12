@@ -147,8 +147,9 @@ OMP_TERMUX_MODE=device ./dev/omp-termux-dev build   # native build on the phone:
   `omp_binary_path`, `tmp_dir`). `use_root` pins the shell at `$BUN_HOME`; installing bun or omp calls
   `resolve_env` again. Nothing below re-derives any of it. `REMOTE_ROOT_PROBE` is the POSIX twin of the root
   rule, which the build half has the device evaluate before it can run anything there.
-- Key functions, tool: `usage`, `install_addon`, `link_global_tree`, `fetch_release`, `device_install`,
-  `run_verify`, `installed_state`/`newest_natives_dir` (what the device actually loads), `check_self_update`,
+- Key functions, tool: `usage`, `install_addon`, `stray_scope_deps`, `link_global_tree`, `fetch_release`, `device_install`,
+  `run_verify`, `installed_state`/`newest_natives_dir` (what the device actually loads: `CUR_DIR` and
+  `CUR_VERSION`/`CUR_ADDON` for that copy, `CUR_CLI_VERSION` for the omp it runs), `check_self_update`,
   `cache_get`/`cache_put`, `print_status`, `cmd_install_self`, `cmd_update_self`,
   `cmd_uninstall_self`, plus the dispatch in `main` (line numbers drift; search by name).
 - Key functions, build half: `detect_ndk`/`ndk_ok`, `vendored_patch`, `fetch_source`, `apply_patch`,
@@ -166,7 +167,13 @@ OMP_TERMUX_MODE=device ./dev/omp-termux-dev build   # native build on the phone:
   install it, which is why that form stays in the code and out of the docs — and it fetches the addon **before**
   upgrading omp, resolves `latest` from this repository's newest
   published release, skips everything (download included) when that version is already installed and loads, and
-  fails only when the installed version is newer than anything published here; `install_addon` takes the target
+  fails only when the omp the device runs is newer than anything published here — that version comes from the
+  CLI package, never from the pi-natives the tree happens to hold. The CLI pins its whole `@oh-my-pi` scope
+  exactly, but bun keeps an entry an older install left in the global manifest and resolves it to the newest
+  version its range allows, so the tool drops those entries whenever the verb runs (the skip included) and
+  lets the CLI's own pins decide the tree;
+  `run_verify` hangs its verdict on the copy the device loads while reporting the others;
+  `install_addon` takes the target
   version from the artifact's own stamp (the same release the loader compares), so nothing reads a source tree
   any more;
   `verify_artifact` hard-fails on
@@ -212,7 +219,10 @@ OMP_TERMUX_MODE=device ./dev/omp-termux-dev build   # native build on the phone:
   the build half answers `help` and rejects an unknown verb. The device sections need
   `out/pi_natives.android-arm64.node` and are skipped without it; one release fixture records its version the
   pre-stamp way, so both identities the tool reads are exercised. It never touches a real device or the network,
-  and refuses to run if its `/tmp` paths are not what it expects.
+  and refuses to run if its `/tmp` paths are not what it expects. Its stubbed bun copies the two behaviours the
+  tool leans on: a device that has bun's global layout gets it rewritten at the version asked for, and a tree
+  holding no addon for the platform cannot load — so a device carrying a stale copy from another release is
+  exercised (the fake device gets a global tree only where a case asks for one).
 - Extend that script whenever a bug escapes it: the harness is what caught the truncated `fetch_release`, the
   prune that deleted a link target and the `ln -sfn`-into-a-directory case, but the "no-argument install picked
   the oldest version" bug only showed up on a real device.
@@ -222,7 +232,11 @@ OMP_TERMUX_MODE=device ./dev/omp-termux-dev build   # native build on the phone:
   `install latest` on a device already at the published version exits 0, prints `nothing to do` and fetches
   nothing, while one that needs a download but has no release exits non-zero, calls no `bun install -g`, and
   prints `nothing was changed`; a device ahead of everything published here exits non-zero and leaves the addon
-  untouched; an addon that reports another version is rejected; repeated installs stay idempotent;
+  untouched; a device whose tree holds a *newer* pi-natives than the omp it runs is not ahead — it is repaired:
+  the scope entries kept in the manifest are dropped (an install with nothing else to do drops them too), bun
+  is asked for the CLI at the published version, the addon lands in the tree omp loads, a leftover copy of
+  another release is reported without failing the run, and the next install has nothing to do;
+  an addon that reports another version is rejected; repeated installs stay idempotent;
   the device end state is the addon plus `~/.local/opt/omp-termux` plus one symlink (`$BIN_HOME`: `$PREFIX/bin`
   on Termux, else `$XDG_BIN_HOME` or `~/.local/bin`) and nothing else; `update-self` refuses a script that
   fails `bash -n` and
