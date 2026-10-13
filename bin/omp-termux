@@ -26,7 +26,7 @@ SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 ADDON="pi_natives.android-arm64.node"
 UPSTREAM_REPO="can1357/oh-my-pi"        # upstream project: its newest release has no build here until we build one
 REPO="${OMP_TERMUX_REPO:-hmeqo/omp-termux}"
-TOOL_VERSION=0.5.0                      # a label only: every comparison reads the content hash
+TOOL_VERSION=0.5.1                      # a label only: every comparison reads the content hash
 PROG="omp-termux"                        # names this script in hints; dev/omp-termux-dev overrides it
 SELF_URL="${OMP_TERMUX_RAW_BASE:-https://raw.githubusercontent.com/$REPO/main}/bin/omp-termux"
 SELF_CACHE="$PREFIX/cache/self-update"  # under $PREFIX, so uninstall-self removes it too
@@ -283,8 +283,8 @@ installed_state() { # the pi-natives this device loads: sets CUR_VERSION, CUR_AD
 		CUR_ADDON="$dir/native/$ADDON"
 		CUR_DIR="$dir"
 	fi
-	# The omp the device runs, which is not the pi-natives its tree holds: bun can leave the two at different
-	# releases, so the "ahead" guard reads the CLI's own version.
+	# The omp the device runs, which can be another release than the pi-natives its tree holds; the "ahead"
+	# guard asks about that one.
 	CUR_CLI_VERSION=""
 	cli="$scope/pi-coding-agent/package.json"
 	[ -f "$cli" ] && CUR_CLI_VERSION="$(json_version "$cli")"
@@ -472,6 +472,20 @@ stray_scope_deps() { # the @oh-my-pi entries the global manifest lists besides t
 	printf '%s\n' "$strays"
 }
 
+drop_stray_scope_deps() { # removes the scope entries bun kept besides the CLI, where the verb is about to act
+	# Never on the way to a refusal: a run that changes nothing must leave the manifest alone too.
+	local strays
+	[ -n "$BUN_BIN" ] || return 0
+	strays="$(stray_scope_deps)"
+	[ -n "$strays" ] || return 0
+	use_root
+	msg "dropping the stale global entries: $strays"
+	for name in $strays; do
+		# One per call: a batched remove fails wholesale when any name is absent, leaving the rest in place.
+		"$BUN_BIN" remove -g "$name" || warn "removing $name from the global manifest failed"
+	done
+}
+
 install_addon() { # $1 = path to a .node
 	local addon="$1" target_version="" n=0 seen="" d v
 	[ -f "$addon" ] || die "no artifact to install: $addon"
@@ -603,7 +617,7 @@ fetch_release() { # $1 = pi-natives version; puts the addon in RELEASE_ADDON, di
 }
 
 device_install() { # $1 = version, "latest", or a path to a .node; no argument = the version this device runs
-	local arg="${1:-}" want current up="" pub="" explicit="" vlog strays
+	local arg="${1:-}" want current up="" pub="" explicit="" vlog pin
 	link_global_tree
 	if [ -n "$arg" ] && [ -f "$arg" ]; then
 		install_addon "$arg"
@@ -628,17 +642,6 @@ device_install() { # $1 = version, "latest", or a path to a .node; no argument =
 			;;
 		*) explicit=1; want="${arg#v}" ;;
 	esac
-	# A kept entry can sit in the manifest for a whole release without hurting anything: it only decides against
-	# the CLI's pins once it resolves higher than them, which is what a later upgrade does. Drop it however this
-	# verb ends, so what it leaves behind is the manifest a fresh install writes.
-	if [ -n "$BUN_BIN" ]; then
-		strays="$(stray_scope_deps)"
-		if [ -n "$strays" ]; then
-			use_root
-			msg "dropping the stale global entries: $strays"
-			"$BUN_BIN" remove -g $strays || warn "removing $strays from the global manifest failed"
-		fi
-	fi
 	installed_state
 	if [ -n "$pub" ]; then
 		panel_line "newest build here" "omp-$pub"
@@ -650,6 +653,7 @@ device_install() { # $1 = version, "latest", or a path to a .node; no argument =
 	mkdir -p "$CACHE_HOME"
 	vlog="$CACHE_HOME/verify.log"
 	if [ "$CUR_VERSION" = "$want" ] && [ -f "$CUR_ADDON" ] && ( run_verify ) >"$vlog" 2>&1; then
+		drop_stray_scope_deps
 		panel_line "you have" "omp-$CUR_VERSION (addon in place, loads OK)"
 		rm -f "$vlog"
 		rm -rf "$CACHE_HOME"
@@ -670,6 +674,7 @@ device_install() { # $1 = version, "latest", or a path to a .node; no argument =
 	# Fetch before moving omp: an upgrade without the matching addon in hand leaves omp unable to start.
 	device_ensure_bun || die "cannot install bun; install it by hand: pkg install bun"
 	fetch_release "$want"
+	drop_stray_scope_deps
 	current="$CUR_VERSION"
 	if [ "$CUR_CLI_VERSION" != "$want" ] || [ "$current" != "$want" ]; then
 		use_root
@@ -679,9 +684,15 @@ device_install() { # $1 = version, "latest", or a path to a .node; no argument =
 		else
 			msg "the global tree resolves ${current:-none}; bringing it back to $want"
 		fi
-		# Naming the package ourselves would leave an entry of exactly the kind that caused this, so nothing but
-		# the CLI is ever named and its own pins decide the whole tree.
-		"$BUN_BIN" install -g "@oh-my-pi/pi-coding-agent@$want" || die "installing omp $want failed"
+		# A tree that drifted for a reason the manifest does not show still has to end at this version, so the
+		# addon's package is named too while the tree is off target: that forces bun to replace it. The entry
+		# this writes is taken back out below, so the manifest keeps the CLI alone and its pins decide.
+		pin=""
+		[ "$current" != "$want" ] && pin=" @oh-my-pi/pi-natives@$want"
+		"$BUN_BIN" install -g "@oh-my-pi/pi-coding-agent@$want"$pin || die "installing omp $want failed"
+		if [ -n "$pin" ]; then
+			"$BUN_BIN" remove -g "@oh-my-pi/pi-natives" || warn "the natives pin could not be taken back out"
+		fi
 		resolve_env      # bun's global tree changed: read the roots again before touching the addon
 	fi
 	install_addon "$RELEASE_ADDON"

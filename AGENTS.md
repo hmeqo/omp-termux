@@ -170,8 +170,10 @@ OMP_TERMUX_MODE=device ./dev/omp-termux-dev build   # native build on the phone:
   fails only when the omp the device runs is newer than anything published here — that version comes from the
   CLI package, never from the pi-natives the tree happens to hold. The CLI pins its whole `@oh-my-pi` scope
   exactly, but bun keeps an entry an older install left in the global manifest and resolves it to the newest
-  version its range allows, so the tool drops those entries whenever the verb runs (the skip included) and
-  lets the CLI's own pins decide the tree;
+  version its range allows, so the tool drops those entries on the paths where the verb acts (the skip
+  included, never on the way to a refusal) and lets the CLI's own pins decide the tree. A tree that drifted
+  with no entry to blame is forced back by naming the addon's package on the install line, whose entry is then
+  taken out again;
   `run_verify` hangs its verdict on the copy the device loads while reporting the others;
   `install_addon` takes the target
   version from the artifact's own stamp (the same release the loader compares), so nothing reads a source tree
@@ -233,9 +235,11 @@ OMP_TERMUX_MODE=device ./dev/omp-termux-dev build   # native build on the phone:
   nothing, while one that needs a download but has no release exits non-zero, calls no `bun install -g`, and
   prints `nothing was changed`; a device ahead of everything published here exits non-zero and leaves the addon
   untouched; a device whose tree holds a *newer* pi-natives than the omp it runs is not ahead — it is repaired:
-  the scope entries kept in the manifest are dropped (an install with nothing else to do drops them too), bun
-  is asked for the CLI at the published version, the addon lands in the tree omp loads, a leftover copy of
-  another release is reported without failing the run, and the next install has nothing to do;
+  the scope entries kept in the manifest are dropped (an install with nothing else to do drops them too,
+  while a refused or failed one leaves them alone), bun is asked for the CLI at the published version, the
+  addon's package is named when the tree is off target and that pin is taken back out, the addon lands in the
+  tree omp loads, a leftover copy of another release is reported without failing the run, and the next install
+  has nothing to do;
   an addon that reports another version is rejected; repeated installs stay idempotent;
   the device end state is the addon plus `~/.local/opt/omp-termux` plus one symlink (`$BIN_HOME`: `$PREFIX/bin`
   on Termux, else `$XDG_BIN_HOME` or `~/.local/bin`) and nothing else; `update-self` refuses a script that

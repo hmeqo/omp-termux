@@ -218,12 +218,17 @@ grep -q "upstream $V2 is published but has no build here yet" /tmp/vup.log &&
 	ok "upstream ahead: says the build is missing here" || no "upstream ahead: silent about the missing build"
 fake_curl "$FB/curl" "$V1" "$V1"
 
-# Behind and the release it needs is gone: a real failure, and nothing on the device changes.
+# Behind and the release it needs is gone: a real failure, and nothing on the device changes — a kept scope
+# entry included, which is only dropped on the paths that go on to act.
 rm -rf "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V1@@@1"
+mkdir -p "$T/.bun/install/global"
+printf '{"dependencies":{"@oh-my-pi/pi-coding-agent":"%s","@oh-my-pi/pi-natives":"^%s"}}' "$V0" "$V2" >"$T/.bun/install/global/package.json"
 : >"$LOG"; dev "file:///tmp/vmissing" install latest >/tmp/v4.log 2>&1
 chk "needed release missing exits !=0" "$(nonzero $?)" "non0"
 chk "needed release missing: bun not called" "$(grep -c 'install -g' "$LOG" 2>/dev/null || true)" "0"
+chk "needed release missing: the kept entry is left alone" "$(grep -c 'remove -g' "$LOG" 2>/dev/null || true)" "0"
 grep -q 'nothing was changed' /tmp/v4.log && ok "says nothing was changed" || no "silent about nothing was changed"
+rm -f "$T/.bun/install/global/package.json"
 
 # A release whose addon reports another version is a wrong or truncated download, not an install.
 : >"$LOG"; dev "file://$R19" install latest >/tmp/vwrong.log 2>&1
@@ -291,10 +296,15 @@ grep -q "the global tree resolves $V2; bringing it back to $V0" /tmp/vstale.log 
 	ok "stale tree: says it is bringing the tree back" || { no "stale tree: silent about the tree"; tail -3 /tmp/vstale.log | sed 's|^|       |'; }
 grep -q 'dropping the stale global entries: @oh-my-pi/pi-natives @oh-my-pi/pi-utils' /tmp/vstale.log &&
 	ok "stale tree: names every entry it drops" || { no "stale tree: silent about the entries"; tail -3 /tmp/vstale.log | sed 's|^|       |'; }
-chk "stale tree: bun drops the kept entries" "$(grep -c 'remove -g .*pi-natives.*pi-utils' "$LOG")" "1"
-chk "stale tree: bun installs the CLI at the published version" \
-	"$(grep -o "install -g @oh-my-pi/pi-coding-agent@$V0" "$LOG" | head -1)" "install -g @oh-my-pi/pi-coding-agent@$V0"
-chk "stale tree: writes no entry of our own" "$(grep -c 'install -g.*pi-natives@' "$LOG")" "0"
+grep -q 'remove -g @oh-my-pi/pi-natives' "$LOG" && ok "stale tree: the natives entry is dropped" ||
+	no "stale tree: the natives entry stays"
+grep -q 'remove -g @oh-my-pi/pi-utils' "$LOG" && ok "stale tree: the utils entry is dropped" ||
+	no "stale tree: the utils entry stays"
+chk "stale tree: the addon's package is named to force the tree" \
+	"$(grep -o "install -g @oh-my-pi/pi-coding-agent@$V0 @oh-my-pi/pi-natives@$V0" "$LOG" | head -1)" \
+	"install -g @oh-my-pi/pi-coding-agent@$V0 @oh-my-pi/pi-natives@$V0"
+[ "$(grep -c 'remove -g @oh-my-pi/pi-natives' "$LOG")" -ge 2 ] &&
+	ok "stale tree: the pin it wrote is taken back out" || no "stale tree: the pin stays in the manifest"
 chk "stale tree: the tree omp loads becomes $V0" \
 	"$(python3 -c "import json;print(json.load(open('$GLOBAL/pi-natives/package.json'))['version'])")" "$V0"
 chk "stale tree: the addon lands in the tree omp loads" "$(ls "$GLOBAL/pi-natives/native" | tr '\n' ' ')" "pi_natives.android-arm64.node "
@@ -309,6 +319,28 @@ grep -q 'nothing to do' /tmp/vstale2.log && ok "stale tree: the second run is se
 chk "stale tree: the second run leaves bun alone" "$(grep -c 'install -g' "$LOG" 2>/dev/null || true)" "0"
 rm -rf "$GLOBAL" "$T/.bun/install/global/package.json" "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V2@@@1" "$T/.bun/install/cache/node_modules"
 fake_curl "$FB/curl" "$V1" "$V1"   # back to the sections below, which model a cache-only device
+
+# The tree can be off target for a reason the manifest does not show (bun's own resolution, a copy it kept):
+# naming the addon's package forces it, so the device still ends at the published version.
+mkdir -p "$GLOBAL/pi-natives/native" "$GLOBAL/pi-coding-agent"
+pkg_json "$V1" >"$GLOBAL/pi-natives/package.json"
+pkg_json "$V0" >"$GLOBAL/pi-coding-agent/package.json"
+rm -f "$T/.bun/install/global/package.json"
+fake_curl "$FB/curl" "$V1" "$V0"
+: >"$LOG"
+dev "file://$R19" install latest >/tmp/vforce.log 2>&1
+chk "forced tree: exits 0" "$?" "0"
+grep -q 'dropping the stale global entries' /tmp/vforce.log && no "forced tree: dropped entries that were never listed" ||
+	ok "forced tree: nothing to drop"
+grep -q "install -g @oh-my-pi/pi-coding-agent@$V0 @oh-my-pi/pi-natives@$V0" "$LOG" &&
+	ok "forced tree: the addon's package is named" || { no "forced tree: only the CLI was named"; tail -3 /tmp/vforce.log | sed 's|^|       |'; }
+grep -q 'remove -g @oh-my-pi/pi-natives' "$LOG" && ok "forced tree: the pin is taken back out" ||
+	no "forced tree: the pin stays in the manifest"
+chk "forced tree: the tree omp loads becomes $V0" \
+	"$(python3 -c "import json;print(json.load(open('$GLOBAL/pi-natives/package.json'))['version'])")" "$V0"
+chk "forced tree: the addon lands in the tree omp loads" "$(ls "$GLOBAL/pi-natives/native" | tr '\n' ' ')" "pi_natives.android-arm64.node "
+rm -rf "$GLOBAL" "$T/.bun/install/cache/node_modules"
+fake_curl "$FB/curl" "$V1" "$V1"
 
 chk "update-self on identical content: already up to date" "$(dev "file://$R19" update-self 2>&1 | grep -c 'already up to date')" "1"
 printf '\n# moved on\n' >>"$RAW/bin/omp-termux"
