@@ -26,8 +26,9 @@ SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 ADDON="pi_natives.android-arm64.node"
 UPSTREAM_REPO="can1357/oh-my-pi"        # upstream project: its newest release has no build here until we build one
 REPO="${OMP_TERMUX_REPO:-hmeqo/omp-termux}"
-TOOL_VERSION=0.5.1                      # a label only: every comparison reads the content hash
+TOOL_VERSION=0.5.2                      # a label only: every comparison reads the content hash
 PROG="omp-termux"                        # names this script in hints; dev/omp-termux-dev overrides it
+PARENT_PATH="$PATH"                      # inherited before use_root prepends to ours: the PATH hints judge the user's shell
 SELF_URL="${OMP_TERMUX_RAW_BASE:-https://raw.githubusercontent.com/$REPO/main}/bin/omp-termux"
 SELF_CACHE="$PREFIX/cache/self-update"  # under $PREFIX, so uninstall-self removes it too
 SELF_TTL="${OMP_TERMUX_UPDATE_TTL:-86400}"
@@ -318,16 +319,25 @@ artifact_version() { # $1 = .node file -> the release it reports ("" when it car
 }
 
 # --- this tool's own install and update -----------------------------------------------------------
-path_reminder() {
-	case ":$PATH:" in
-		*":$BIN_HOME:"*) return 0 ;;
+path_hint() { # $1 = a directory the user has to reach; says so once, in the running shell's syntax
+	case ":$PARENT_PATH:" in
+		*":$1:"*) return 0 ;;
 	esac
 	echo
-	warn "$BIN_HOME is not in your PATH yet. Add it, e.g."
+	warn "$1 is not in your PATH yet. Add it, e.g."
 	case "${SHELL:-}" in
-		*/fish) printf '  fish_add_path %s\n' "$BIN_HOME" ;;
-		*) printf '  export PATH="%s:$PATH"    # add to ~/.bashrc, ~/.zshrc, ...\n' "$BIN_HOME" ;;
+		*/fish) printf '  fish_add_path %s\n' "$1" ;;
+		*) printf '  export PATH="%s:$PATH"    # add to ~/.bashrc, ~/.zshrc, ...\n' "$1" ;;
 	esac
+}
+
+path_reminder() { # what a device install leaves behind that this shell cannot reach yet: `omp` and the tool
+	# bun's bin dir is named only when an `omp` or `bun` actually sits in it: a root that never got one has
+	# nothing to point at, and a copy the system PATH already reaches is not this tool's business.
+	if [ "$BUN_HOME/bin" != "$BIN_HOME" ] && { [ -x "$BUN_HOME/bin/omp" ] || [ -x "$BUN_HOME/bin/bun" ]; }; then
+		path_hint "$BUN_HOME/bin"
+	fi
+	path_hint "$BIN_HOME"
 }
 
 link_self() { # $PREFIX/bin/omp-termux linked into $BIN_HOME; quiet while the link is already right

@@ -151,7 +151,7 @@ OMP_TERMUX_MODE=device ./dev/omp-termux-dev build   # native build on the phone:
   `run_verify`, `installed_state`/`newest_natives_dir` (what the device actually loads: `CUR_DIR` and
   `CUR_VERSION`/`CUR_ADDON` for that copy, `CUR_CLI_VERSION` for the omp it runs), `check_self_update`,
   `cache_get`/`cache_put`, `print_status`, `cmd_install_self`, `cmd_update_self`,
-  `cmd_uninstall_self`, plus the dispatch in `main` (line numbers drift; search by name).
+  `cmd_uninstall_self`, `path_hint`/`path_reminder`, plus the dispatch in `main` (line numbers drift; search by name).
 - Key functions, build half: `detect_ndk`/`ndk_ok`, `vendored_patch`, `fetch_source`, `apply_patch`,
   `install_build_deps`, `device_build`, `ensure_rust_target`, `prepare_opus`, `cross_build`, `stamp_artifact`,
   `finalize_artifact`, `verify_artifact`, `workstation_build`, `ensure_artifact`, `build_doctor`, and the device
@@ -242,7 +242,8 @@ OMP_TERMUX_MODE=device ./dev/omp-termux-dev build   # native build on the phone:
   has nothing to do;
   an addon that reports another version is rejected; repeated installs stay idempotent;
   the device end state is the addon plus `~/.local/opt/omp-termux` plus one symlink (`$BIN_HOME`: `$PREFIX/bin`
-  on Termux, else `$XDG_BIN_HOME` or `~/.local/bin`) and nothing else; `update-self` refuses a script that
+  on Termux, else `$XDG_BIN_HOME` or `~/.local/bin`) and nothing else; the PATH hints are asserted too: one per
+  missing directory, bun's bin dir only once something to run sits in it, and none when the shell reaches both; `update-self` refuses a script that
   fails `bash -n` and
   keeps the old copy, and drops the self-update cache so the next verb re-checks.
 - The self-update check is asserted through a stubbed `curl` that logs every call: one stderr line when `main`

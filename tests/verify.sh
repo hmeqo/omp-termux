@@ -134,6 +134,10 @@ if [ "\$1" = install ] && [ "\$2" = -g ]; then
 			echo "{\\"name\\":\\"@oh-my-pi/\$pkg\\",\\"version\\":\\"\$v\\"}" >"\$g/package.json"
 		done
 	fi
+	# Real bun links the package's bin entry into <root>/bin; `omp` itself and the smoke test need that copy.
+	mkdir -p "\$root/bin"
+	printf '#!/bin/sh\necho "omp \$*"\n' >"\$root/bin/omp"
+	chmod +x "\$root/bin/omp"
 fi
 exit 0
 EOS
@@ -173,6 +177,8 @@ grep -q 'nothing to do' /tmp/v2.log && ok "install (no argument): already at the
 	{ no "install (no argument) does not say nothing to do"; tail -3 /tmp/v2.log | sed 's|^|       |'; }
 chk "install (no argument): nothing to do comes last" "$(tail -n1 /tmp/v2.log | grep -c 'nothing to do')" "1"
 chk "install (no argument): does not re-link an existing link" "$(grep -c 'linked ' /tmp/v2.log)" "0"
+chk "install (no argument): hints the tool's link dir" "$(grep -c "$T/usr/bin is not in your PATH yet" /tmp/v2.log)" "1"
+chk "install (no argument): no bun bin dir to point at" "$(grep -c "$T/.bun/bin is not in your PATH yet" /tmp/v2.log)" "0"
 
 # A kept scope entry does not change what the device loads today, but it would shadow the CLI's pins on the
 # next hand upgrade; the verb drops it even when it has nothing else to do.
@@ -191,6 +197,18 @@ fake_curl "$FB/curl" "$V1" "$V1"   # this repository publishes $V1 now, which $R
 dev "file://$R20" install latest >/tmp/v3.log 2>&1; chk "install latest exit=0" "$?" "0"
 chk "calls bun to upgrade" "$(grep -o "install -g @oh-my-pi/pi-coding-agent@$V1" "$LOG" | head -1)" "install -g @oh-my-pi/pi-coding-agent@$V1"
 chk "addon in place in the new package" "$(ls "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V1@@@1/native" 2>/dev/null | tr '\n' ' ')" "pi_natives.android-arm64.node "
+chk "hints bun's bin dir once it holds omp" "$(grep -c "$T/.bun/bin is not in your PATH yet" /tmp/v3.log)" "1"
+chk "hints the tool's link dir too" "$(grep -c "$T/usr/bin is not in your PATH yet" /tmp/v3.log)" "1"
+
+# Both directories on PATH: the reminder has nothing to say.
+(
+	HOME=$T; TMPDIR=$T/tmp; PREFIX=$T/usr; XDG_CONFIG_HOME=$T/.config; XDG_CACHE_HOME=$T/.cache
+	TERMUX_VERSION=0.118; PATH="$T/.bun/bin:$T/usr/bin:$FB:$PATH"; OMP_TERMUX_RAW_BASE="file://$RAW"
+	OMP_TERMUX_RELEASE_BASE="file://$R20"
+	export HOME TMPDIR PREFIX XDG_CONFIG_HOME XDG_CACHE_HOME TERMUX_VERSION PATH OMP_TERMUX_RAW_BASE OMP_TERMUX_RELEASE_BASE
+	"$TOOL" install
+) >/tmp/vpath.log 2>&1
+chk "both on PATH: no hint at all" "$(grep -c 'is not in your PATH yet' /tmp/vpath.log 2>/dev/null || true)" "0"
 
 # Already at the published version: the release is never fetched, so nothing is downloaded.
 : >"$LOG"; : >"$CURL_LOG"
@@ -514,7 +532,7 @@ mkdir -p "$TX" "$FX" "$RX"
 XDGR="$TX/.cache/.bun"; LEGR="$TX/.bun"
 XPKG="$XDGR/install/cache/@oh-my-pi/pi-natives@$V2@@@1"
 mkdir -p "$XPKG/native" "$XDGR/install/global/node_modules/@oh-my-pi/pi-natives/native" \
-	"$LEGR/install/cache/@oh-my-pi/pi-natives@$V0@@@1/native" "$TX/usr/bin" "$TX/tmp" "$TX/.config"
+	"$LEGR/install/cache/@oh-my-pi/pi-natives@$V0@@@1/native" "$XDGR/bin" "$TX/usr/bin" "$TX/tmp" "$TX/.config"
 pkg_json "$V2" >"$XPKG/package.json"
 pkg_json "$V2" >"$XDGR/install/global/node_modules/@oh-my-pi/pi-natives/package.json"
 pkg_json "$V0" >"$LEGR/install/cache/@oh-my-pi/pi-natives@$V0@@@1/package.json"
@@ -525,12 +543,15 @@ b = pathlib.Path('$R/out/pi_natives.android-arm64.node').read_bytes()
 pathlib.Path('$RX/pi_natives.android-arm64.node').write_bytes(b.replace(b'$S0', b'$S2'))"
 fake_curl "$FX/curl" "$V1" "$V2"   # this repository publishes the $V2 the fixture carries
 printf '#!/bin/sh\nexit 0\n' >"$FX/bun"
-chmod +x "$FX/curl" "$FX/bun"
+printf '#!/bin/sh\nexit 0\n' >"$XDGR/bin/omp"   # something to run in the root in use, so its bin dir is named
+chmod +x "$FX/curl" "$FX/bun" "$XDGR/bin/omp"
 HOME=$TX XDG_CACHE_HOME="$TX/.cache" TMPDIR=$TX/tmp PREFIX=$TX/usr XDG_CONFIG_HOME=$TX/.config TERMUX_VERSION=0.118 \
 	PATH="$FX:$PATH" OMP_TERMUX_RELEASE_BASE="file://$RX" bash "$R/bin/omp-termux" install >/tmp/verify-xdg.log 2>&1
 chk "XDG root: install uses the version it should" "$(grep -c "fetching pi-natives $V2" /tmp/verify-xdg.log)" "1"
 [ -f "$XPKG/native/pi_natives.android-arm64.node" ] && ok "XDG root: addon lands in the package in use" || no "XDG root: addon missing from the package in use"
 [ -d "$LEGR/install/cache/@oh-my-pi/pi-natives@$V0@@@1" ] && no "XDG root: old-root copy not reclaimed" || ok "XDG root: old-root copy reclaimed by the rules"
+chk "XDG root: the PATH hint names the root in use" "$(grep -c "$XDGR/bin is not in your PATH yet" /tmp/verify-xdg.log)" "1"
+chk "XDG root: and not the other root's bin" "$(grep -c "$LEGR/bin is not in your PATH yet" /tmp/verify-xdg.log)" "0"
 
 echo "== the resolved environment: the tool and its device probes agree, and a relative path is not one"
 # The build half has the device evaluate the tool's own root rule (REMOTE_ROOT_PROBE) before it can run
