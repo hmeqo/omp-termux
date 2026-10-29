@@ -23,5 +23,4 @@ SOFTWARE.
 ---
 
 patches/0001-termux-android-arm64.patch is derived from
-https://github.com/can1357/oh-my-pi/pull/6350 (MIT), by @anatoli-tsinovoy,
-and carries its own attribution header.
+https://github.com/can1357/oh-my-pi/pull/6350 (MIT), by @anatoli-tsinovoy.

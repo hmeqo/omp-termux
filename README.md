@@ -62,7 +62,6 @@ Building the addon from source: [Building the addon](docs/build.md) (or [中文]
 
 ## Credits and license
 
-Android support comes from upstream [PR #6350](https://github.com/can1357/oh-my-pi/pull/6350)
-by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy).
+Android support comes from upstream [PR #6350](https://github.com/can1357/oh-my-pi/pull/6350).
 The upstream project is [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi);
-both are MIT — see [LICENSE](LICENSE).
+both are MIT — see [LICENSE](LICENSE) for the attribution.

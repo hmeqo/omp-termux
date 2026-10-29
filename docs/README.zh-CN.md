@@ -59,7 +59,6 @@ omp-termux update-self      # replace omp-termux itself
 
 ## 致谢与许可
 
-Android 支持来自上游 [PR #6350](https://github.com/can1357/oh-my-pi/pull/6350),
-作者 [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)。
+Android 支持来自上游 [PR #6350](https://github.com/can1357/oh-my-pi/pull/6350)。
 上游项目为 [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi);
-两者均采用 MIT 许可,见 [LICENSE](../LICENSE)。
+两者均采用 MIT 许可,署名见 [LICENSE](../LICENSE)。
