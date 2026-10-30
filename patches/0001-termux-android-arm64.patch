@@ -3,14 +3,15 @@
 #   upstream  : https://github.com/can1357/oh-my-pi        (MIT)
 #   pull      : https://github.com/can1357/oh-my-pi/pull/6350
 #   head sha  : 5981c2d61da6030829b2581e820a52c277035855  (base: main e0996aad2cf4)
-#   rebased   : 2026-10-29 onto v18.13.3 (413d278a); the CHANGELOG hunks are dropped.
+#   rebased   : 2026-10-30 onto v18.14.0 (31147f9d); the CHANGELOG hunks are dropped.
 #
-# 9 files, +55/-16 against v18.13.3. Summary:
+# 11 files, +66/-19 against v18.14.0. Summary:
 #   crates/pi-natives           arboard + clipboard/desktop modules become
 #                               cfg(not(target_os = "android")) — arboard has no
 #                               Android backend.
 #   crates/pi-shell             compiles its Linux process backend on Android too.
-#   crates/pi-builtins          Bionic-compatible process discovery (/proc).
+#   crates/pi-builtins          Bionic-compatible process discovery (/proc) and
+#                               rsync syscalls.
 #   crates/pi-vfs               defines AT_EACCESS locally: the libc crate omits
 #                               it for Android.
 #   packages/natives/scripts/   scopes RUSTC_BOOTSTRAP to xutf,pi_natives so a
@@ -50,10 +51,10 @@ index 239fad1..a4097fb 100644
  	}
  	match KillSignal::parse(value).ok()? {
 diff --git a/crates/pi-builtins/src/lib.rs b/crates/pi-builtins/src/lib.rs
-index efde45a..a8ab9c1 100644
+index ee13736..db0c419 100644
 --- a/crates/pi-builtins/src/lib.rs
 +++ b/crates/pi-builtins/src/lib.rs
-@@ -341,7 +341,7 @@ pub use proc_snapshot::{ProcInfo, ProcessStatus};
+@@ -343,7 +343,7 @@ pub use proc_snapshot::{ProcInfo, ProcessStatus};
  /// implementation.
  #[cfg(all(
  	feature = "util.procs",
@@ -63,7 +64,7 @@ index efde45a..a8ab9c1 100644
  pub use proc_snapshot::sys as proc_sys;
  
 diff --git a/crates/pi-builtins/src/proc_snapshot.rs b/crates/pi-builtins/src/proc_snapshot.rs
-index b8bd473..70a5623 100644
+index 5ab3109..c5d1c62 100644
 --- a/crates/pi-builtins/src/proc_snapshot.rs
 +++ b/crates/pi-builtins/src/proc_snapshot.rs
 @@ -100,7 +100,7 @@ fn parse_procargs2(buffer: &[u8]) -> Vec<String> {
@@ -117,7 +118,7 @@ index b8bd473..70a5623 100644
  	fn uptime_seconds() -> Option<f64> {
  		fs::read_to_string("/proc/uptime")
  			.ok()?
-@@ -1799,7 +1818,7 @@ mod proc_snapshot {
+@@ -1796,7 +1815,7 @@ mod proc_snapshot {
  	}
  }
  
@@ -126,7 +127,7 @@ index b8bd473..70a5623 100644
  pub use proc_snapshot::{ProcInfo, threads_by_pid};
  
  /// The processes a signal must never reach: this one and its ancestors.
-@@ -1823,7 +1842,7 @@ pub use proc_snapshot::{ProcInfo, threads_by_pid};
+@@ -1820,7 +1839,7 @@ pub use proc_snapshot::{ProcInfo, threads_by_pid};
  ///
  /// Listing is unaffected: `pgrep` still reports ancestors and `ps` still shows
  /// them. Only signalling consults this.
@@ -135,7 +136,7 @@ index b8bd473..70a5623 100644
  pub(crate) struct HostProcesses {
  	/// This process and its ancestors, nearest first.
  	pub pids:  smallvec::SmallVec<[i32; 16]>,
-@@ -1836,17 +1855,17 @@ pub(crate) struct HostProcesses {
+@@ -1833,17 +1852,17 @@ pub(crate) struct HostProcesses {
  /// Keeping the walk over this rather than over [`ProcInfo`] lets the recycling
  /// cases — which are otherwise only reachable by winning a race against the OS —
  /// be tested with a synthetic tree.
@@ -158,7 +159,7 @@ index b8bd473..70a5623 100644
  	/// Walks the parent chain from the current process, taking one process-table
  	/// snapshot.
 diff --git a/crates/pi-builtins/src/ps.rs b/crates/pi-builtins/src/ps.rs
-index dd75000..30c07d4 100644
+index 956c7f7..47aa0b3 100644
 --- a/crates/pi-builtins/src/ps.rs
 +++ b/crates/pi-builtins/src/ps.rs
 @@ -1266,7 +1266,7 @@ fn format_ps_elapsed(duration: Duration) -> String {
@@ -170,8 +171,44 @@ index dd75000..30c07d4 100644
  fn ps_total_memory_bytes() -> Option<u64> {
  	let value = fs::read_to_string("/proc/meminfo")
  		.ok()?
+diff --git a/crates/pi-builtins/src/rsync/transport/tcp/sock_unix.rs b/crates/pi-builtins/src/rsync/transport/tcp/sock_unix.rs
+index d28e8c0..a520472 100644
+--- a/crates/pi-builtins/src/rsync/transport/tcp/sock_unix.rs
++++ b/crates/pi-builtins/src/rsync/transport/tcp/sock_unix.rs
+@@ -139,7 +139,7 @@ pub(super) fn numeric_host(addr: &Addr) -> String {
+ 			addr.as_ptr(),
+ 			addr.len,
+ 			buf.as_mut_ptr(),
+-			buf.len() as libc::socklen_t,
++			buf.len() as _,
+ 			std::ptr::null_mut(),
+ 			0,
+ 			libc::NI_NUMERICHOST,
+diff --git a/crates/pi-builtins/src/rsync/tree/sys.rs b/crates/pi-builtins/src/rsync/tree/sys.rs
+index 08b8c00..6cefe69 100644
+--- a/crates/pi-builtins/src/rsync/tree/sys.rs
++++ b/crates/pi-builtins/src/rsync/tree/sys.rs
+@@ -270,8 +270,16 @@ pub(crate) fn mknodat(
+ /// `mkfifoat(dir, name, mode)`.
+ pub(crate) fn mkfifoat(dir: Option<BorrowedFd<'_>>, name: &CStr, mode: u32) -> io::Result<()> {
+ 	check(retry(|| {
+-		// SAFETY: valid C string and dirfd.
+-		unsafe { libc::mkfifoat(dirfd(dir), name.as_ptr(), mode as libc::mode_t) }
++		// SAFETY: valid C string and dirfd. The libc crate omits mkfifoat on
++		// Android, where mknodat with S_IFIFO is the same operation.
++		#[cfg(target_os = "android")]
++		unsafe {
++			libc::mknodat(dirfd(dir), name.as_ptr(), mode | libc::S_IFIFO, 0)
++		}
++		#[cfg(not(target_os = "android"))]
++		unsafe {
++			libc::mkfifoat(dirfd(dir), name.as_ptr(), mode as libc::mode_t)
++		}
+ 	}))
+ }
+ 
 diff --git a/crates/pi-natives/Cargo.toml b/crates/pi-natives/Cargo.toml
-index b4601e2..f668e27 100644
+index f360c00..7e02e6b 100644
 --- a/crates/pi-natives/Cargo.toml
 +++ b/crates/pi-natives/Cargo.toml
 @@ -25,7 +25,6 @@ wayland-pipewire = ["dep:pipewire"]
@@ -179,10 +216,10 @@ index b4601e2..f668e27 100644
  anyhow.workspace = true
  async-trait.workspace = true
 -arboard.workspace = true
- ast-grep-core.workspace = true
  base64.workspace = true
  clap.workspace = true
-@@ -108,6 +107,9 @@ objc2-foundation = "=0.3.2"
+ heapless.workspace = true
+@@ -102,6 +101,9 @@ objc2-foundation = "=0.3.2"
  objc2-application-services = { version = "=0.3.2", default-features = true }
  objc2-core-foundation = "=0.3.2"
  
@@ -191,12 +228,12 @@ index b4601e2..f668e27 100644
 +
  [target.'cfg(unix)'.dependencies]
  libc.workspace = true
- 
+ # Match terminfo's build-time phf_shared features.
 diff --git a/crates/pi-natives/src/lib.rs b/crates/pi-natives/src/lib.rs
-index ed6de01..3fbba40 100644
+index f718879..d679106 100644
 --- a/crates/pi-natives/src/lib.rs
 +++ b/crates/pi-natives/src/lib.rs
-@@ -27,8 +27,10 @@ pub mod applefm;
+@@ -31,8 +31,10 @@ pub mod applefm;
  pub mod ast;
  pub mod audio;
  pub mod block;
@@ -208,7 +245,7 @@ index ed6de01..3fbba40 100644
  pub mod devicecheck;
  pub mod diff;
 diff --git a/crates/pi-shell/src/process.rs b/crates/pi-shell/src/process.rs
-index fc1c1c8..c01d501 100644
+index 602a829..4693842 100644
 --- a/crates/pi-shell/src/process.rs
 +++ b/crates/pi-shell/src/process.rs
 @@ -16,7 +16,7 @@ pub use pi_builtins::ProcessStatus;
@@ -221,10 +258,10 @@ index fc1c1c8..c01d501 100644
  	use std::{
  		collections::HashSet,
 diff --git a/crates/pi-vfs/src/fs.rs b/crates/pi-vfs/src/fs.rs
-index 87a9423..a4ce474 100644
+index a378045..8ad6a37 100644
 --- a/crates/pi-vfs/src/fs.rs
 +++ b/crates/pi-vfs/src/fs.rs
-@@ -510,11 +510,17 @@ fn helper_exited() -> io::Error {
+@@ -507,11 +507,17 @@ fn helper_exited() -> io::Error {
  #[cfg(unix)]
  fn may_access(path: &Path, mode: libc::c_int) -> bool {
  	use std::os::unix::ffi::OsStrExt;
