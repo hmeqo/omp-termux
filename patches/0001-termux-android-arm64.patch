@@ -3,15 +3,16 @@
 #   upstream  : https://github.com/can1357/oh-my-pi        (MIT)
 #   pull      : https://github.com/can1357/oh-my-pi/pull/6350
 #   head sha  : 5981c2d61da6030829b2581e820a52c277035855  (base: main e0996aad2cf4)
-#   rebased   : 2026-10-30 onto v18.14.0 (31147f9d); the CHANGELOG hunks are dropped.
+#   rebased   : 2026-11-06 onto v18.17.0 (75e7801e); the CHANGELOG hunks are dropped.
 #
-# 11 files, +66/-19 against v18.14.0. Summary:
+# 14 files, +91/-38 against v18.17.0. Summary:
 #   crates/pi-natives           arboard + clipboard/desktop modules become
 #                               cfg(not(target_os = "android")) — arboard has no
 #                               Android backend.
-#   crates/pi-shell             compiles its Linux process backend on Android too.
-#   crates/pi-builtins          Bionic-compatible process discovery (/proc) and
-#                               rsync syscalls.
+#   crates/pi-shell             compiles its Linux process backend (proctree.rs) and
+#                               the tty/socket/process syscalls on Android too.
+#   crates/pi-builtins          Bionic-compatible process discovery (/proc), real-time
+#                               signal numbers, and the rsync syscalls.
 #   crates/pi-vfs               defines AT_EACCESS locally: the libc crate omits
 #                               it for Android.
 #   packages/natives/scripts/   scopes RUSTC_BOOTSTRAP to xutf,pi_natives so a
@@ -26,35 +27,11 @@
 # DesktopSession and defer its rejection to the first desktop use.
 #
 # Applied by apply_patch in dev/omp-termux-dev (git apply, CHANGELOG hunks excluded).
-diff --git a/crates/pi-builtins/src/kill.rs b/crates/pi-builtins/src/kill.rs
-index 239fad1..a4097fb 100644
---- a/crates/pi-builtins/src/kill.rs
-+++ b/crates/pi-builtins/src/kill.rs
-@@ -693,12 +693,16 @@ pub(crate) fn signal_number(value: &str) -> Option<i32> {
- 		.strip_prefix("SIG")
- 		.or_else(|| value.strip_prefix("sig"))
- 		.unwrap_or(value);
-+	#[cfg(any(target_os = "android", target_os = "linux"))]
- 	if let Ok(number) = value.parse::<i32>() {
--		#[cfg(target_os = "linux")]
- 		return (0..=libc::SIGRTMAX()).contains(&number).then_some(number);
--		#[cfg(target_os = "macos")]
-+	}
-+	#[cfg(target_os = "macos")]
-+	if let Ok(number) = value.parse::<i32>() {
- 		return (0..=31).contains(&number).then_some(number);
--		#[cfg(not(unix))]
-+	}
-+	#[cfg(not(unix))]
-+	if let Ok(number) = value.parse::<i32>() {
- 		return (0..=64).contains(&number).then_some(number);
- 	}
- 	match KillSignal::parse(value).ok()? {
 diff --git a/crates/pi-builtins/src/lib.rs b/crates/pi-builtins/src/lib.rs
-index ee13736..db0c419 100644
+index 78c0bac..845c948 100644
 --- a/crates/pi-builtins/src/lib.rs
 +++ b/crates/pi-builtins/src/lib.rs
-@@ -343,7 +343,7 @@ pub use proc_snapshot::{ProcInfo, ProcessStatus};
+@@ -234,6 +234,6 @@ pub use proc_snapshot::{ProcInfo, ProcessStatus};
  /// implementation.
  #[cfg(all(
  	feature = "util.procs",
@@ -62,12 +39,31 @@ index ee13736..db0c419 100644
 +	any(target_os = "android", target_os = "linux", target_os = "macos", target_os = "windows")
  ))]
  pub use proc_snapshot::sys as proc_sys;
+diff --git a/crates/pi-builtins/src/proc_match.rs b/crates/pi-builtins/src/proc_match.rs
+index 1741d09..c2642ad 100644
+--- a/crates/pi-builtins/src/proc_match.rs
++++ b/crates/pi-builtins/src/proc_match.rs
+@@ -340,13 +340,13 @@ const SIGNALS: &[(&str, i32)] = &[
+ ];
  
+ /// Whether `number` is a real-time signal (Linux), which has no name here.
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "android"))]
+ fn is_realtime(number: i32) -> bool {
+ 	(libc::SIGRTMIN()..=libc::SIGRTMAX()).contains(&number)
+ }
+ 
+ /// Whether `number` is a real-time signal; none are recognized here.
+-#[cfg(not(target_os = "linux"))]
++#[cfg(not(any(target_os = "linux", target_os = "android")))]
+ const fn is_realtime(_number: i32) -> bool {
+ 	false
+ }
 diff --git a/crates/pi-builtins/src/proc_snapshot.rs b/crates/pi-builtins/src/proc_snapshot.rs
-index 5ab3109..c5d1c62 100644
+index 144dd2a..206cf82 100644
 --- a/crates/pi-builtins/src/proc_snapshot.rs
 +++ b/crates/pi-builtins/src/proc_snapshot.rs
-@@ -100,7 +100,7 @@ fn parse_procargs2(buffer: &[u8]) -> Vec<String> {
+@@ -116,7 +116,7 @@ fn parse_procargs2(buffer: &[u8]) -> Vec<String> {
  }
  
  /// Linux process primitives: procfs and pidfds.
@@ -76,7 +72,7 @@ index 5ab3109..c5d1c62 100644
  pub mod sys {
  	use std::{
  		fs,
-@@ -181,7 +181,7 @@ pub mod sys {
+@@ -197,7 +197,7 @@ pub mod sys {
  	}
  }
  
@@ -85,7 +81,7 @@ index 5ab3109..c5d1c62 100644
  mod proc_snapshot {
  	use std::{collections::HashMap, fs, os::fd::AsFd, time::Duration};
  
-@@ -348,6 +348,24 @@ mod proc_snapshot {
+@@ -364,6 +364,24 @@ mod proc_snapshot {
  				return alive();
  			}
  			let Some(pidfd) = sys::open_pidfd(self.pid) else {
@@ -110,7 +106,7 @@ index 5ab3109..c5d1c62 100644
  				return false;
  			};
  			if !alive() {
-@@ -473,6 +491,7 @@ mod proc_snapshot {
+@@ -490,6 +508,7 @@ mod proc_snapshot {
  		Some((ids.next()?, ids.next()?))
  	}
  
@@ -118,7 +114,7 @@ index 5ab3109..c5d1c62 100644
  	fn uptime_seconds() -> Option<f64> {
  		fs::read_to_string("/proc/uptime")
  			.ok()?
-@@ -1796,7 +1815,7 @@ mod proc_snapshot {
+@@ -1876,7 +1895,7 @@ mod proc_snapshot {
  	}
  }
  
@@ -127,16 +123,16 @@ index 5ab3109..c5d1c62 100644
  pub use proc_snapshot::{ProcInfo, threads_by_pid};
  
  /// The processes a signal must never reach: this one and its ancestors.
-@@ -1820,7 +1839,7 @@ pub use proc_snapshot::{ProcInfo, threads_by_pid};
+@@ -1900,7 +1919,7 @@ pub use proc_snapshot::{ProcInfo, threads_by_pid};
  ///
  /// Listing is unaffected: `pgrep` still reports ancestors and `ps` still shows
  /// them. Only signalling consults this.
 -#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 +#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos", target_os = "windows"))]
- pub(crate) struct HostProcesses {
+ pub struct HostProcesses {
  	/// This process and its ancestors, nearest first.
  	pub pids:  smallvec::SmallVec<[i32; 16]>,
-@@ -1833,17 +1852,17 @@ pub(crate) struct HostProcesses {
+@@ -1913,17 +1932,17 @@ pub struct HostProcesses {
  /// Keeping the walk over this rather than over [`ProcInfo`] lets the recycling
  /// cases — which are otherwise only reachable by winning a race against the OS —
  /// be tested with a synthetic tree.
@@ -156,13 +152,13 @@ index 5ab3109..c5d1c62 100644
 -#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 +#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos", target_os = "windows"))]
  impl HostProcesses {
- 	/// Walks the parent chain from the current process, taking one process-table
- 	/// snapshot.
+ 	/// Whether signalling `target` would reach this process or one of its
+ 	/// ancestors.
 diff --git a/crates/pi-builtins/src/ps.rs b/crates/pi-builtins/src/ps.rs
-index 956c7f7..47aa0b3 100644
+index 7f1249e..f1a72c7 100644
 --- a/crates/pi-builtins/src/ps.rs
 +++ b/crates/pi-builtins/src/ps.rs
-@@ -1266,7 +1266,7 @@ fn format_ps_elapsed(duration: Duration) -> String {
+@@ -1274,7 +1274,7 @@ fn format_ps_elapsed(duration: Duration) -> String {
  	}
  }
  
@@ -208,7 +204,7 @@ index 08b8c00..6cefe69 100644
  }
  
 diff --git a/crates/pi-natives/Cargo.toml b/crates/pi-natives/Cargo.toml
-index f360c00..7e02e6b 100644
+index 8ab8ab8..c35dc46 100644
 --- a/crates/pi-natives/Cargo.toml
 +++ b/crates/pi-natives/Cargo.toml
 @@ -25,7 +25,6 @@ wayland-pipewire = ["dep:pipewire"]
@@ -217,9 +213,9 @@ index f360c00..7e02e6b 100644
  async-trait.workspace = true
 -arboard.workspace = true
  base64.workspace = true
- clap.workspace = true
- heapless.workspace = true
-@@ -102,6 +101,9 @@ objc2-foundation = "=0.3.2"
+ fontdue.workspace = true
+ grep-matcher.workspace = true
+@@ -92,6 +91,9 @@ objc2-foundation = "=0.3.2"
  objc2-application-services = { version = "=0.3.2", default-features = true }
  objc2-core-foundation = "=0.3.2"
  
@@ -228,12 +224,12 @@ index f360c00..7e02e6b 100644
 +
  [target.'cfg(unix)'.dependencies]
  libc.workspace = true
- # Match terminfo's build-time phf_shared features.
+ 
 diff --git a/crates/pi-natives/src/lib.rs b/crates/pi-natives/src/lib.rs
-index f718879..d679106 100644
+index dc5e9b6..2623cfa 100644
 --- a/crates/pi-natives/src/lib.rs
 +++ b/crates/pi-natives/src/lib.rs
-@@ -31,8 +31,10 @@ pub mod applefm;
+@@ -27,8 +27,10 @@ pub mod applefm;
  pub mod ast;
  pub mod audio;
  pub mod block;
@@ -244,11 +240,11 @@ index f718879..d679106 100644
  pub mod desktop;
  pub mod devicecheck;
  pub mod diff;
-diff --git a/crates/pi-shell/src/process.rs b/crates/pi-shell/src/process.rs
-index 602a829..4693842 100644
---- a/crates/pi-shell/src/process.rs
-+++ b/crates/pi-shell/src/process.rs
-@@ -16,7 +16,7 @@ pub use pi_builtins::ProcessStatus;
+diff --git a/crates/pi-shell/src/proctree.rs b/crates/pi-shell/src/proctree.rs
+index ffcb9c5..79724ad 100644
+--- a/crates/pi-shell/src/proctree.rs
++++ b/crates/pi-shell/src/proctree.rs
+@@ -15,7 +15,7 @@ pub use pi_builtins::ProcessStatus;
  
  use crate::cancel::CancelToken;
  
@@ -257,6 +253,171 @@ index 602a829..4693842 100644
  mod platform {
  	use std::{
  		collections::HashSet,
+diff --git a/crates/pi-shell/src/sys/proc.rs b/crates/pi-shell/src/sys/proc.rs
+index 4a49af4..ea7e66d 100644
+--- a/crates/pi-shell/src/sys/proc.rs
++++ b/crates/pi-shell/src/sys/proc.rs
+@@ -169,13 +169,15 @@ fn parse_stat(pid: i32, line: &[u8]) -> Option<ProcInfo> {
+ 	})
+ }
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "android"))]
+ mod sys {
+ 	use std::{
+ 		fs,
+ 		io::{self, Read},
+-		os::fd::{AsRawFd, FromRawFd, OwnedFd},
++		os::fd::{AsRawFd, OwnedFd},
+ 	};
++	#[cfg(not(target_os = "android"))]
++	use std::os::fd::FromRawFd;
+ 
+ 	use super::{ProcInfo, parse_stat};
+ 
+@@ -226,6 +228,14 @@ mod sys {
+ 		Ok((ns * hz / 1_000_000_000) as u64)
+ 	}
+ 
++	#[cfg(target_os = "android")]
++	fn pidfd_open(_pid: i32) -> io::Result<OwnedFd> {
++		// Android's seccomp policy can refuse pidfd_open; the start-time recheck
++		// below is the same fallback older kernels take.
++		Err(io::Error::from_raw_os_error(libc::ENOSYS))
++	}
++
++	#[cfg(not(target_os = "android"))]
+ 	fn pidfd_open(pid: i32) -> io::Result<OwnedFd> {
+ 		// SAFETY: pidfd_open takes scalar arguments and returns a new fd.
+ 		let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+diff --git a/crates/pi-shell/src/sys/socket.rs b/crates/pi-shell/src/sys/socket.rs
+index c351de7..06a6a3a 100644
+--- a/crates/pi-shell/src/sys/socket.rs
++++ b/crates/pi-shell/src/sys/socket.rs
+@@ -385,7 +385,7 @@ fn reverse(addr: IpAddr) -> Option<BString> {
+ 			(&raw const ss).cast(),
+ 			len,
+ 			host.as_mut_ptr(),
+-			host.len() as libc::socklen_t,
++			host.len() as _,
+ 			std::ptr::null_mut(),
+ 			0,
+ 			libc::NI_NAMEREQD,
+diff --git a/crates/pi-shell/src/sys/tty.rs b/crates/pi-shell/src/sys/tty.rs
+index 31612e3..5121ea0 100644
+--- a/crates/pi-shell/src/sys/tty.rs
++++ b/crates/pi-shell/src/sys/tty.rs
+@@ -51,7 +51,7 @@ mod unix {
+ 		(TermFlag::Inlcr, Field::I, libc::INLCR),
+ 		(TermFlag::Igncr, Field::I, libc::IGNCR),
+ 		(TermFlag::Icrnl, Field::I, libc::ICRNL),
+-		#[cfg(target_os = "linux")]
++		#[cfg(any(target_os = "linux", target_os = "android"))]
+ 		(TermFlag::Iuclc, Field::I, libc::IUCLC),
+ 		(TermFlag::Ixon, Field::I, libc::IXON),
+ 		(TermFlag::Ixany, Field::I, libc::IXANY),
+@@ -59,7 +59,7 @@ mod unix {
+ 		(TermFlag::Imaxbel, Field::I, libc::IMAXBEL),
+ 		(TermFlag::Iutf8, Field::I, IUTF8),
+ 		(TermFlag::Opost, Field::O, libc::OPOST),
+-		#[cfg(target_os = "linux")]
++		#[cfg(any(target_os = "linux", target_os = "android"))]
+ 		(TermFlag::Olcuc, Field::O, libc::OLCUC),
+ 		(TermFlag::Onlcr, Field::O, libc::ONLCR),
+ 		(TermFlag::Ocrnl, Field::O, libc::OCRNL),
+@@ -74,7 +74,7 @@ mod unix {
+ 		(TermFlag::Crtscts, Field::C, libc::CRTSCTS),
+ 		(TermFlag::Isig, Field::L, libc::ISIG),
+ 		(TermFlag::Icanon, Field::L, libc::ICANON),
+-		#[cfg(target_os = "linux")]
++		#[cfg(any(target_os = "linux", target_os = "android"))]
+ 		(TermFlag::Xcase, Field::L, libc::XCASE),
+ 		(TermFlag::Echo, Field::L, libc::ECHO),
+ 		(TermFlag::Echoe, Field::L, libc::ECHOE),
+@@ -92,9 +92,9 @@ mod unix {
+ 	];
+ 
+ 	/// `IUTF8` (not in every libc target module).
+-	#[cfg(target_os = "linux")]
++	#[cfg(any(target_os = "linux", target_os = "android"))]
+ 	const IUTF8: libc::tcflag_t = 0o040000;
+-	#[cfg(not(target_os = "linux"))]
++	#[cfg(not(any(target_os = "linux", target_os = "android")))]
+ 	const IUTF8: libc::tcflag_t = libc::IUTF8;
+ 
+ 	/// The platform's `c_cc` index for each [`CtlChar`] it has.
+@@ -109,26 +109,26 @@ mod unix {
+ 		(CtlChar::Start, libc::VSTART),
+ 		(CtlChar::Stop, libc::VSTOP),
+ 		(CtlChar::Susp, libc::VSUSP),
+-		#[cfg(not(target_os = "linux"))]
++		#[cfg(not(any(target_os = "linux", target_os = "android")))]
+ 		(CtlChar::Dsusp, libc::VDSUSP),
+ 		(CtlChar::Lnext, libc::VLNEXT),
+ 		(CtlChar::Werase, libc::VWERASE),
+ 		(CtlChar::Reprint, libc::VREPRINT),
+ 		(CtlChar::Discard, libc::VDISCARD),
+-		#[cfg(not(target_os = "linux"))]
++		#[cfg(not(any(target_os = "linux", target_os = "android")))]
+ 		(CtlChar::Status, libc::VSTATUS),
+-		#[cfg(target_os = "linux")]
++		#[cfg(any(target_os = "linux", target_os = "android"))]
+ 		(CtlChar::Swtc, libc::VSWTC),
+ 	];
+ 
+ 	/// `_POSIX_VDISABLE`.
+-	#[cfg(target_os = "linux")]
++	#[cfg(any(target_os = "linux", target_os = "android"))]
+ 	const VDISABLE: libc::cc_t = 0;
+-	#[cfg(not(target_os = "linux"))]
++	#[cfg(not(any(target_os = "linux", target_os = "android")))]
+ 	const VDISABLE: libc::cc_t = 0xff;
+ 
+ 	/// Linux encodes speeds as `B…` codes; `(code, baud)`.
+-	#[cfg(target_os = "linux")]
++	#[cfg(any(target_os = "linux", target_os = "android"))]
+ 	const SPEEDS: &[(libc::speed_t, u32)] = &[
+ 		(libc::B0, 0),
+ 		(libc::B50, 50),
+@@ -163,22 +163,22 @@ mod unix {
+ 		(libc::B4000000, 4_000_000),
+ 	];
+ 
+-	#[cfg(target_os = "linux")]
++	#[cfg(any(target_os = "linux", target_os = "android"))]
+ 	fn baud(code: libc::speed_t) -> u32 {
+ 		SPEEDS.iter().find(|s| s.0 == code).map_or(0, |s| s.1)
+ 	}
+ 
+-	#[cfg(target_os = "linux")]
++	#[cfg(any(target_os = "linux", target_os = "android"))]
+ 	fn code(baud: u32) -> Option<libc::speed_t> {
+ 		SPEEDS.iter().find(|s| s.1 == baud).map(|s| s.0)
+ 	}
+ 
+-	#[cfg(not(target_os = "linux"))]
++	#[cfg(not(any(target_os = "linux", target_os = "android")))]
+ 	fn baud(code: libc::speed_t) -> u32 {
+ 		u32::try_from(code).unwrap_or(u32::MAX)
+ 	}
+ 
+-	#[cfg(not(target_os = "linux"))]
++	#[cfg(not(any(target_os = "linux", target_os = "android")))]
+ 	fn code(baud: u32) -> libc::speed_t {
+ 		libc::speed_t::from(baud)
+ 	}
+@@ -266,9 +266,9 @@ mod unix {
+ 		os.c_cc[libc::VMIN] = t.min;
+ 		os.c_cc[libc::VTIME] = t.time;
+ 		// An unknown speed keeps the encoding's.
+-		#[cfg(target_os = "linux")]
++		#[cfg(any(target_os = "linux", target_os = "android"))]
+ 		let (ispeed, ospeed) = (code(t.ispeed), code(t.ospeed));
+-		#[cfg(not(target_os = "linux"))]
++		#[cfg(not(any(target_os = "linux", target_os = "android")))]
+ 		let (ispeed, ospeed) = (Some(code(t.ispeed)), Some(code(t.ospeed)));
+ 		if let Some(i) = ispeed {
+ 			// SAFETY: `os` is a valid termios.
 diff --git a/crates/pi-vfs/src/fs.rs b/crates/pi-vfs/src/fs.rs
 index a378045..8ad6a37 100644
 --- a/crates/pi-vfs/src/fs.rs
