@@ -8,7 +8,8 @@
 
 需要一台工作站(在 Linux x86_64 上验证),装有 `rustup`、`bun` ≥ 1.3.14、Android NDK
 (依次取 `OMP_TERMUX_NDK`、`ANDROID_NDK_ROOT`、`ANDROID_NDK_HOME`,或用 SDK 里最新的 `ndk/*`)、`cmake`、
-`ninja`、`git`、`curl`、`unzip`。缺哪个,`./dev/omp-termux-dev doctor` 会指出来。
+`ninja`、`git`、`curl`、`unzip`,以及 `file` 和 `readelf` 用于产物校验(`nm` 存在时会额外检查)。
+缺哪个,`./dev/omp-termux-dev doctor` 会指出来。
 
 ## 编译
 

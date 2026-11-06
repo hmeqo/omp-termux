@@ -8,7 +8,7 @@ on:
         required: false
         default: ""
   push:
-    tags: ["omp-*"]
+    tags: ["omp-[0-9]*"]
 
 permissions:
   contents: write            # needed to publish the release
@@ -27,20 +27,26 @@ jobs:
       - name: Resolve the omp version to build
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION_INPUT: ${{ inputs.version }}
+          UPSTREAM_REPO: can1357/oh-my-pi
         run: |
           set -euo pipefail
-          if [ -n "${{ inputs.version }}" ]; then
-            VERSION="${{ inputs.version }}"
+          if [ -n "$VERSION_INPUT" ]; then
+            VERSION="${VERSION_INPUT#omp-}"
+            VERSION="${VERSION#v}"
+            TAG="omp-$VERSION"
           elif [ "$GITHUB_REF_TYPE" = tag ]; then
-            VERSION="${GITHUB_REF_NAME#omp-}"
-            VERSION="${VERSION#v}"
+            TAG="$GITHUB_REF_NAME"
+            VERSION="${TAG#omp-}"
           else
-            VERSION="$(gh api repos/can1357/oh-my-pi/releases/latest --jq .tag_name)"
+            VERSION="$(gh api "repos/$UPSTREAM_REPO/releases/latest" --jq .tag_name)"
             VERSION="${VERSION#v}"
+            TAG="omp-$VERSION"
           fi
           [ -n "$VERSION" ] || { echo "could not resolve an omp version" >&2; exit 1; }
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          echo "building pi-natives for omp $VERSION"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "building pi-natives for omp $VERSION (release $TAG)"
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -50,7 +56,7 @@ jobs:
         run: |
           rustup --version
           bun --version
-          cmake --version | head -1
+          cmake --version | sed -n 1p
           # the build tool picks the NDK up from ANDROID_NDK_ROOT / _HOME / _LATEST_HOME or the SDK itself.
           echo "NDK: ${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_ROOT:-${ANDROID_NDK_HOME:-unset}}}"
 
@@ -59,7 +65,6 @@ jobs:
           path: |
             work/cargo-target
             work/napi-cli
-            work/opus-24-arm64
             work/src
           key: omp-termux-${{ runner.os }}-${{ hashFiles('patches/*.patch') }}
           restore-keys: |
@@ -75,7 +80,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG="omp-$VERSION"
           FILES="out/pi_natives.android-arm64.node"
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" $FILES --clobber

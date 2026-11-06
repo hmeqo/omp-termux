@@ -17,6 +17,7 @@ curl -fsSL https://raw.githubusercontent.com/hmeqo/omp-termux/main/install.sh | 
 
 设备要求 Android 7+(API 24)、aarch64,并装有 `curl`。脚本会安装缺失的 `bun` 与 omp(取本仓库已发布的最新构建),
 再把与你的 `@oh-my-pi/pi-natives` 匹配的插件放进 `omp` 所用包的 `native/` 目录,并把 `omp-termux` 留在 PATH 上。
+引导脚本会把参数转交给 `install`,所以 `... | sh -s -- 18.3.4` 会安装该版本。
 启动 `omp`(已在运行则重启)能跑起来即表示插件已就位。
 之后用 `omp-termux install latest` 让两者保持同步。
 
@@ -34,10 +35,10 @@ omp-termux update-self      # replace omp-termux itself
 
 | 命令 | 说明 |
 |---|---|
-| `omp-termux install [version\|file]` | 让本机用上该版本并安装插件(`latest` = 本仓库已发布的最新构建,缺省 = 当前运行的版本);已经装上就跳过下载,只在需要时编译,设备上没有 bun/omp 时也会自动装好 |
-| `omp-termux status` / `verify` | 查看装了哪个版本 / 检查插件是否正常加载 |
+| `omp-termux install [version\|file]` | 让本机用上该版本并安装插件(`latest` = 本仓库已发布的最新构建,缺省 = 当前运行的版本);已经装上就跳过下载,只在需要时编译,设备上没有 bun/omp 时也会自动装好,该 omp 要求更高版本的 bun 时会升级 |
+| `omp-termux status` / `verify` | 查看装了哪个版本 / 检查插件能否加载、omp 能否启动 |
 | `omp-termux update-self` | 把已安装的 `omp-termux` 换成仓库里的最新版本 |
-| `omp-termux uninstall-self` | 从本设备移除工具及其缓存(omp 保留) |
+| `omp-termux uninstall-self` | 从本设备移除工具及其自更新缓存(omp 保留) |
 | `omp-termux doctor` | 检查本设备的运行环境 |
 
 从源码编译插件:[编译插件](build.zh-CN.md)(另有 [英文版](build.md))。

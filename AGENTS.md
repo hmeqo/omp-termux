@@ -15,8 +15,8 @@ Two bash scripts do the work: one for the device, one for building the addon.
 - `bin/omp-termux` — the device tool, and it has no mode: by design it is the device side, so it asks nothing
   about the machine it starts on and reports whatever pi-natives it finds. The helpers sit under
   `# --- section ---` banners (reporting, environment resolution, installed-addon inspection, the tool's
-  own install and update check, the device install, the release lookups, doctor, dispatch); all verbs are one
-  `case` in `main`.
+  own install and update check, the device install, the status report, the release lookups, doctor, dispatch);
+  `main` parses the verb, then dispatches.
 - `dev/omp-termux-dev` — the build half: what the NDK, rustup, cmake, ninja and the vendored patch need, and
   nothing the device runs. It sources `bin/omp-termux` for `$ADDON`, `$UPSTREAM_REPO`, `$SELF` and the shared
   helpers, so those exist once, and asks where it runs itself (`TERMUX_VERSION` set or
@@ -30,9 +30,10 @@ Two bash scripts do the work: one for the device, one for building the addon.
   These verbs refuse in device mode.
 - Build path (workstation or CI): `workstation_build` → `fetch_source` (clone `UPSTREAM` at tag `v<version>` into
   `work/src`) → `ensure_rust_target` → `apply_patch` (vendored `patches/*.patch`, else the PR diff from the
-  network) → `install_build_deps` → `prepare_opus` → `cross_build` (napi-rs CLI, `--profile ci`,
-  `aarch64-linux-android`, into the `out/.build` staging dir) → `finalize_artifact` (move this run's link from
-  there to `$ADDON`, then `stamp_artifact`) → `verify_artifact "$version"`.
+  network) → `install_build_deps` → `prepare_opus` (only for versions whose lock still carries `audiopus_sys`)
+  → `cross_build` (napi-rs CLI, `--profile ci`, `aarch64-linux-android`, into the `out/.build`
+  staging dir) → `finalize_artifact` (stamp and verify this run's link in the staging dir, then move it to
+  `$ADDON`).
 - Build path (device, hours): `device_build` builds through upstream's `packages/natives/scripts/build-bindings.ts`
   and leaves the addon in `work/`, which is what a device `install` reads.
 - Install path (device): `device_install` → `link_global_tree` (Termux bun-layout repair) → `fetch_release` (or a
@@ -56,7 +57,7 @@ Two bash scripts do the work: one for the device, one for building the addon.
 |---|---|
 | `bin/omp-termux` | The device tool (bash, hard tabs, ~700 lines). |
 | `dev/omp-termux-dev` | The build half (bash, hard tabs, ~600 lines); sources `bin/omp-termux` and drives a target device over ssh. |
-| `install.sh` | Device bootstrap for ordinary users: fetch raw `bin/omp-termux`, `bash -n` it, run device `install`. |
+|`install.sh`|Device bootstrap for ordinary users: fetch raw `bin/omp-termux`, `bash -n` it, run device `install latest` (or `$OMP_TERMUX_VERSION`/the version passed in).|
 |`patches/`|Vendored upstream PR #6350 patch: provenance header, then 11 diffs over 11 files against v18.14.0. Read only by the build half.|
 | `.github/workflows/build.yml` | The only CI: cross-compile and publish one release per omp version. |
 | `docs/` | `README.zh-CN.md` (translation of `README.md`), `build.md` / `build.zh-CN.md` (the build half), `font.md` / `font.zh-CN.md` (Nerd Font notes). |
@@ -68,7 +69,7 @@ Two bash scripts do the work: one for the device, one for building the addon.
 bash -n bin/omp-termux && bash -n dev/omp-termux-dev && sh -n install.sh   # syntax gates
 sh tests/verify.sh                              # the local gate: static checks + the device paths, fake device
 ./bin/omp-termux help                           # device verbs = header lines 4-10, printed by usage()
-./dev/omp-termux-dev help                       # build verbs = header lines 4-6
+./dev/omp-termux-dev help                       # build verbs = header lines 4-10
 ./dev/omp-termux-dev doctor                     # build toolchain report (NDK, rustup, cmake, ninja)
 ./dev/omp-termux-dev build 18.3.4               # cross-compile only (needs rustup + NDK + bun + cmake + ninja)
 ./dev/omp-termux-dev device user@host           # save the target device for the verbs below
@@ -92,10 +93,10 @@ OMP_TERMUX_MODE=device ./dev/omp-termux-dev build   # native build on the phone:
 - Function shape: `name() {` on its own line, `local` first, `# $1 = …` doc-comment on the definition line,
   sections separated by `# --- name ---` banners padded to ~100 columns.
 - Comments are reserved for non-obvious external constraints — the loader's release check, bun's
-  cache/global layout, `audiopus_sys` having no `rerun-if-env-changed`, opus' CMake predating CMake 4, and the
-  addon's post-link stamp. Never restate code.
+  cache/global layout, `audiopus_sys` having no `rerun-if-env-changed`, `opusic-sys`
+  building its own bundled opus, and the addon's post-link stamp. Never restate code.
 - The header block **is** the help text, per file: the tool prints lines 4-10 (`usage()` is
-  `sed -n '4,10p' "$SELF"`), the build half lines 4-6 off its own path. Adding a verb means editing that range.
+  `sed -n '4,10p' "$SELF"`), the build half lines 4-10 off its own path. Adding a verb means editing that range.
 - The halves share by sourcing, never by copying: `dev/omp-termux-dev` sources `bin/omp-termux`, whose trailing
   dispatch is guarded by `if [ "${BASH_SOURCE[0]}" = "$0" ]` — an `if`, not `[ … ] &&`, because sourcing must
   not report failure under `set -e`. A name or helper both halves need belongs in the tool.
@@ -113,8 +114,11 @@ OMP_TERMUX_MODE=device ./dev/omp-termux-dev build   # native build on the phone:
   result for `OMP_TERMUX_UPDATE_TTL` seconds under `$PREFIX/cache/self-update` so most verbs never talk to the
   network, and prints one line to stderr when they differ. It never writes to stdout and never changes an exit
   code; the cache is also where `status` gets its `newest here` line, and it is keyed to the copy that fetched
-  it, so a tool replaced by other means re-checks instead of reporting a difference that does not exist. The
-  version lookup resolves `<repo>/releases/latest`'s 302 instead of the GitHub API: the API's 60 requests per
+  it, so a tool replaced by other means re-checks instead of reporting a difference that does not exist.
+  `status` refreshes that fact itself, but only from the installed copy and never with the opt-out set; an
+  `install` that resolves the newest build writes that value back into the same cache, so `status` does not keep
+  the previous TTL value after a release was installed. The version lookup resolves
+  `<repo>/releases/latest`'s 302 instead of the GitHub API: the API's 60 requests per
   hour are per IP and a phone behind carrier NAT shares that with strangers.
 - Docs (`README.md`, `docs/*.md`) are a bilingual pair-set with **English canonical**: prose is translated, while
   every command, flag, path, env var, file name, error string and fenced code block stays byte-identical between
@@ -147,11 +151,14 @@ OMP_TERMUX_MODE=device ./dev/omp-termux-dev build   # native build on the phone:
   `omp_binary_path`, `tmp_dir`). `use_root` pins the shell at `$BUN_HOME`; installing bun or omp calls
   `resolve_env` again. Nothing below re-derives any of it. `REMOTE_ROOT_PROBE` is the POSIX twin of the root
   rule, which the build half has the device evaluate before it can run anything there.
-- Key functions, tool: `usage`, `install_addon`, `stray_scope_deps`, `link_global_tree`, `fetch_release`, `device_install`,
+- Key functions, tool: `usage`, `install_addon`, `stray_scope_deps`, `link_global_tree`, `fetch_release`,
+  `device_resolve_target`/`device_is_current`/`ensure_device_omp`/`device_install`,
+  `device_ensure_bun`/`download_bun`/`upgrade_bun`/`cli_bun_floor`/`ensure_bun_for_omp`,
   `run_verify`, `installed_state`/`newest_natives_dir` (what the device actually loads: `CUR_DIR` and
   `CUR_VERSION`/`CUR_ADDON` for that copy, `CUR_CLI_VERSION` for the omp it runs), `check_self_update`,
-  `cache_get`/`cache_put`, `print_status`, `cmd_install_self`, `cmd_update_self`,
-  `cmd_uninstall_self`, `path_hint`/`path_reminder`, plus the dispatch in `main` (line numbers drift; search by name).
+  `refresh_release_cache`, `cache_get`/`cache_put`, `scratch_clear`, `print_status`, `cmd_install_self`,
+  `cmd_update_self`, `cmd_uninstall_self`, `path_hint`/`path_reminder`, plus the dispatch in `main` (line
+  numbers drift; search by name).
 - Key functions, build half: `detect_ndk`/`ndk_ok`, `vendored_patch`, `fetch_source`, `apply_patch`,
   `install_build_deps`, `device_build`, `ensure_rust_target`, `prepare_opus`, `cross_build`, `stamp_artifact`,
   `finalize_artifact`, `verify_artifact`, `workstation_build`, `ensure_artifact`, `build_doctor`, and the device
@@ -165,16 +172,19 @@ OMP_TERMUX_MODE=device ./dev/omp-termux-dev build   # native build on the phone:
   caller's artifact with `readlink -f` before copying, because `cp` refuses the same file under another
   spelling; `device_install` also accepts a local `.node` — the build half uploads one and has the device tool
   install it, which is why that form stays in the code and out of the docs — and it fetches the addon **before**
-  upgrading omp, resolves `latest` from this repository's newest
-  published release, skips everything (download included) when that version is already installed and loads, and
-  fails only when the omp the device runs is newer than anything published here — that version comes from the
-  CLI package, never from the pi-natives the tree happens to hold. The CLI pins its whole `@oh-my-pi` scope
-  exactly, but bun keeps an entry an older install left in the global manifest and resolves it to the newest
+  upgrading omp, resolves `latest` from this repository's newest published release (keeping the installed
+  version, with a warning, when that lookup fails on a device that already runs one), skips everything (download
+  included) when the target version, its addon and an `omp` binary are already in place and load, and fails only
+  when the omp the device runs is newer than anything published here — that version comes from the CLI package,
+  never from the pi-natives the tree happens to hold. The CLI pins its whole `@oh-my-pi` scope exactly, but bun
+  keeps an entry an older install left in the global manifest and resolves it to the newest
   version its range allows, so the tool drops those entries on the paths where the verb acts (the skip
   included, never on the way to a refusal) and lets the CLI's own pins decide the tree. A tree that drifted
   with no entry to blame is forced back by naming the addon's package on the install line, whose entry is then
-  taken out again;
-  `run_verify` hangs its verdict on the copy the device loads while reporting the others;
+  taken out again; the install paths read the installed omp's `engines.bun` and upgrade a bun below that floor
+  (`bun upgrade`, else the Android zip) before touching the addon, so an omp that needs a newer bun does not
+  leave the device unable to start it; `run_verify` hangs its verdict on the copy the device loads while
+  reporting the others;
   `install_addon` takes the target
   version from the artifact's own stamp (the same release the loader compares), so nothing reads a source tree
   any more;
@@ -188,7 +198,7 @@ OMP_TERMUX_MODE=device ./dev/omp-termux-dev build   # native build on the phone:
 - Cross-file couplings: asset names (`build.yml` ⇄ `$ADDON` ⇄ `fetch_release` in the tool ⇄ `finalize_artifact`
   in the build half), tag naming `omp-<version>` (workflow trigger, skip guard, download URL), URL bases
   (`REPO`/raw base in `install.sh` and the tool), CI cache paths mirroring the build half's
-  `WORK`/`CARGO_TARGET`/`NAPI_CLI_DIR`/`OPUS_PREFIX`/`SRC`, `PR=6350` in the build half matching the patch
+  `WORK`/`CARGO_TARGET`/`NAPI_CLI_DIR`/`SRC`, `PR=6350` in the build half matching the patch
   header, `LICENSE` footer and README credits (which is why `vendored_patch` only accepts a patch file whose
   header names the current `$PR`), the `TOOL_VERSION=` line that both the tool and `install.sh` parse to print a
   version (the tool labels itself with it, the bootstrap only reports it), and the sourced half itself:
@@ -196,8 +206,10 @@ OMP_TERMUX_MODE=device ./dev/omp-termux-dev build   # native build on the phone:
 
 ## Runtime/Tooling Preferences
 
-- Device: bash + `bun` only (`curl`, `unzip` for the bun fallback). No rust, clang or NDK unless building there.
-- Workstation: `rustup`, `bun` ≥ 1.3.14, an Android NDK, `cmake`, `ninja`, `git`, `curl`, `unzip`. NDK
+- Device: bash + `bun` only (`curl`, `unzip` for the install/upgrade fallback); the floor is the installed omp's
+  `engines.bun`. No rust, clang or NDK unless building there.
+- Workstation: `rustup`, `bun` ≥ 1.3.14, an Android NDK, `cmake`, `ninja`, `git`, `curl`, `unzip`, and `file` +
+  binutils (`readelf`, `nm`) for the artifact checks. NDK
   lookup order: `OMP_TERMUX_NDK` → `ANDROID_NDK_ROOT` → `ANDROID_NDK_HOME` → `ANDROID_NDK_LATEST_HOME` →
   `$ANDROID_HOME/ndk/*` (newest) → `/opt/android-ndk`; the host dir `toolchains/llvm/prebuilt/linux-x86_64` is
   hard-coded.
@@ -216,15 +228,17 @@ OMP_TERMUX_MODE=device ./dev/omp-termux-dev build   # native build on the phone:
 ## Testing & QA
 
 - `sh tests/verify.sh` is the local gate: syntax checks, then the device paths against a fake device (stubbed
-  `bun`/`curl`, isolated `HOME`/`TMPDIR`/`XDG_CONFIG_HOME`, `TERMUX_VERSION=0.118`), and a workstation section
-  that asserts `install`/`status`/`verify`/`doctor` refuse there, that `build` is no longer a tool verb, and that
-  the build half answers `help` and rejects an unknown verb. The device sections need
+  `bun`/`curl`, `env -i` with an isolated `HOME`/`TMPDIR`/`XDG_*`, `TERMUX_VERSION=0.118`), a plain-machine section
+  that checks the tool runs and reports nothing installed, and a build-half section that checks its verbs and that
+  device verbs refuse in device mode. The device sections need
   `out/pi_natives.android-arm64.node` and are skipped without it; one release fixture records its version the
   pre-stamp way, so both identities the tool reads are exercised. It never touches a real device or the network,
-  and refuses to run if its `/tmp` paths are not what it expects. Its stubbed bun copies the two behaviours the
-  tool leans on: a device that has bun's global layout gets it rewritten at the version asked for, and a tree
-  holding no addon for the platform cannot load — so a device carrying a stale copy from another release is
-  exercised (the fake device gets a global tree only where a case asks for one).
+  and refuses to run if its `/tmp` paths are not what it expects. Its stubbed bun copies the behaviours the
+  tool leans on: a device that has bun's global layout gets it rewritten at the version asked for, `remove -g`
+  drops that package's entry from the global manifest, `--version`/`upgrade` model the `engines.bun` floor, and
+  a tree holding no addon for the platform cannot load —
+  so a device carrying a stale copy from another release is exercised (the fake device gets a global tree only
+  where a case asks for one).
 - Extend that script whenever a bug escapes it: the harness is what caught the truncated `fetch_release`, the
   prune that deleted a link target and the `ln -sfn`-into-a-directory case, but the "no-argument install picked
   the oldest version" bug only showed up on a real device.
@@ -242,13 +256,16 @@ OMP_TERMUX_MODE=device ./dev/omp-termux-dev build   # native build on the phone:
   has nothing to do;
   an addon that reports another version is rejected; repeated installs stay idempotent;
   the device end state is the addon plus `~/.local/opt/omp-termux` plus one symlink (`$BIN_HOME`: `$PREFIX/bin`
-  on Termux, else `$XDG_BIN_HOME` or `~/.local/bin`) and nothing else; the PATH hints are asserted too: one per
+  on Termux, else `$XDG_BIN_HOME` or `~/.local/bin`) and nothing else; a device whose bun is below the installed
+  omp's `engines.bun` upgrades bun on the local-artifact path, and a second install does not upgrade again;
+  the PATH hints are asserted too: one per
   missing directory, bun's bin dir only once something to run sits in it, and none when the shell reaches both; `update-self` refuses a script that
   fails `bash -n` and
   keeps the old copy, and drops the self-update cache so the next verb re-checks.
 - The self-update check is asserted through a stubbed `curl` that logs every call: one stderr line when `main`
   differs and none when it matches, no request at all while the cache is fresh or when
-  `OMP_TERMUX_NO_UPDATE_CHECK` is set, and its scratch files never survive into `$TMPDIR`.
+  `OMP_TERMUX_NO_UPDATE_CHECK` is set, and its scratch files never survive into `$TMPDIR`. An install that
+  resolves a release refreshes `newest here` even when `release_checked_at` is still fresh.
 - The device access is asserted with stubbed `ssh`/`scp` that log every call and run the command line against a
   fake device HOME: the artifact and the tool are uploaded, the tool installs them there, the
   scratch dir is gone afterwards, and `status` asks the device rather than acting locally.

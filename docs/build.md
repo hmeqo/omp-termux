@@ -9,7 +9,8 @@ and verifies it.
 
 A workstation (tested on Linux x86_64) with `rustup`, `bun` ≥ 1.3.14, an Android NDK (taken from
 `OMP_TERMUX_NDK`, `ANDROID_NDK_ROOT`, `ANDROID_NDK_HOME` or your SDK's newest `ndk/*`), `cmake`, `ninja`, `git`,
-`curl` and `unzip`. `./dev/omp-termux-dev doctor` names whatever is missing.
+`curl`, `unzip`, and `file` plus `readelf` for the artifact checks (`nm` is used when present).
+`./dev/omp-termux-dev doctor` names whatever is missing.
 
 ## Build
 

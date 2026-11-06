@@ -18,8 +18,10 @@ curl -fsSL https://raw.githubusercontent.com/hmeqo/omp-termux/main/install.sh | 
 
 Needs Android 7+ (API 24), aarch64 and `curl`. The script installs a missing `bun` and omp — the newest build
 published here — then puts the addon matching your `@oh-my-pi/pi-natives` into the `native/` directory of the
-package `omp` uses, and leaves `omp-termux` on your PATH. Start `omp`, or restart it if it was already running:
-a successful start means the addon is in place. Later, `omp-termux install latest` keeps the two in step.
+package `omp` uses, and leaves `omp-termux` on your PATH. The bootstrap passes its arguments to `install`, so
+`... | sh -s -- 18.3.4` installs that version.
+Start `omp`, or restart it if it was already running: a successful start means the addon is in place.
+Later, `omp-termux install latest` keeps the two in step.
 
 ### Keep it in step
 
@@ -35,10 +37,10 @@ and `OMP_TERMUX_UPDATE_TTL` (seconds, default 86400) sets how often it runs.
 
 | command | what it does |
 |---|---|
-| `omp-termux install [version\|file]` | bring this device to that version and install the addon (`latest` = the newest build this repository publishes, default = the version it runs); skips the download when it is already there, builds only when needed, and provisions a bare device |
-| `omp-termux status` / `verify` | show what is installed / check that the addon loads |
+| `omp-termux install [version\|file]` | bring this device to that version and install the addon (`latest` = the newest build this repository publishes, default = the version it runs); skips the download when it is already there, builds only when needed, and provisions a bare device (upgrading a bun older than that omp requires) |
+| `omp-termux status` / `verify` | show what is installed / check that the addon loads and omp starts |
 | `omp-termux update-self` | replace the installed `omp-termux` with the newest from this repository |
-| `omp-termux uninstall-self` | remove the tool and its cache from this device (omp stays) |
+| `omp-termux uninstall-self` | remove the tool and its self-update cache from this device (omp stays) |
 | `omp-termux doctor` | check the environment of this device |
 
 Building the addon from source: [Building the addon](docs/build.md) (or [中文](docs/build.zh-CN.md)).
