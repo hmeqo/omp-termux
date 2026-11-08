@@ -3,9 +3,9 @@
 #   upstream  : https://github.com/can1357/oh-my-pi        (MIT)
 #   pull      : https://github.com/can1357/oh-my-pi/pull/6350
 #   head sha  : 5981c2d61da6030829b2581e820a52c277035855  (base: main e0996aad2cf4)
-#   rebased   : 2026-11-06 onto v18.17.0 (75e7801e); the CHANGELOG hunks are dropped.
+#   rebased   : 2026-11-08 onto v18.18.1 (2443906); the CHANGELOG hunks are dropped.
 #
-# 14 files, +91/-38 against v18.17.0. Summary:
+# 14 files, +91/-38 against v18.18.1. Summary:
 #   crates/pi-natives           arboard + clipboard/desktop modules become
 #                               cfg(not(target_os = "android")) — arboard has no
 #                               Android backend.
@@ -204,7 +204,7 @@ index 08b8c00..6cefe69 100644
  }
  
 diff --git a/crates/pi-natives/Cargo.toml b/crates/pi-natives/Cargo.toml
-index 8ab8ab8..c35dc46 100644
+index c2bd26b..7f3c277 100644
 --- a/crates/pi-natives/Cargo.toml
 +++ b/crates/pi-natives/Cargo.toml
 @@ -25,7 +25,6 @@ wayland-pipewire = ["dep:pipewire"]
@@ -215,9 +215,9 @@ index 8ab8ab8..c35dc46 100644
  base64.workspace = true
  fontdue.workspace = true
  grep-matcher.workspace = true
-@@ -92,6 +91,9 @@ objc2-foundation = "=0.3.2"
- objc2-application-services = { version = "=0.3.2", default-features = true }
+@@ -93,6 +92,9 @@ objc2-application-services = { version = "=0.3.2", default-features = true }
  objc2-core-foundation = "=0.3.2"
+ unicode-bidi = "=0.3.18"
  
 +[target.'cfg(not(target_os = "android"))'.dependencies]
 +arboard.workspace = true

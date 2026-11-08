@@ -58,7 +58,7 @@ Two bash scripts do the work: one for the device, one for building the addon.
 | `bin/omp-termux` | The device tool (bash, hard tabs, ~700 lines). |
 | `dev/omp-termux-dev` | The build half (bash, hard tabs, ~600 lines); sources `bin/omp-termux` and drives a target device over ssh. |
 |`install.sh`|Device bootstrap for ordinary users: fetch raw `bin/omp-termux`, `bash -n` it, run device `install latest` (or `$OMP_TERMUX_VERSION`/the version passed in).|
-|`patches/`|Vendored upstream PR #6350 patch: provenance header, then 14 diffs over 14 files against v18.17.0. Read only by the build half.|
+|`patches/`|Vendored upstream PR #6350 patch: provenance header, then 14 diffs over 14 files against v18.18.1. Read only by the build half.|
 | `.github/workflows/build.yml` | The only CI: cross-compile and publish one release per omp version. |
 | `docs/` | `README.zh-CN.md` (translation of `README.md`), `build.md` / `build.zh-CN.md` (the build half), `font.md` / `font.zh-CN.md` (Nerd Font notes). |
 | `docs/topic/` | Design records for the two halves: `tool.md` / `tool.zh-CN.md` (the device tool) and `build.md` / `build.zh-CN.md` (the build half). Prose only; the code keeps constraints, not rationale. |
