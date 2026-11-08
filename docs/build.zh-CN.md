@@ -28,3 +28,5 @@
 ```
 
 `./dev/omp-termux-dev help` 会列出全部动词(`build`、`install`、`status`、`verify`、`device`、`doctor`)。
+
+构建半的设计说明见 [`topic/build.md`](topic/build.md)。

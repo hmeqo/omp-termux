@@ -16,9 +16,9 @@
 # (explicit NDK path; otherwise ANDROID_NDK_ROOT / ANDROID_NDK_HOME / ANDROID_NDK_LATEST_HOME / the SDK's
 # newest ndk/* is used).
 # Layout: bin/omp-termux (the device tool), work/ (clone, cargo target, caches; gitignored), out/ (artifacts).
+# Design notes: docs/topic/build.md.
 set -Eeuo pipefail
-# An unexpected non-zero (usually a pipeline element under `pipefail`) would otherwise abort with no
-# message at all; name the line and the command instead.
+# An unexpected non-zero (usually a pipeline element under `pipefail`) would abort with no message.
 trap 'printf "\033[1;31m[error]\033[0m unexpected failure at %s:%s: %s\n" "${BASH_SOURCE[0]##*/}" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
 # This half does ask where it runs: the same verbs build or reach a device differently on a workstation.
@@ -140,15 +140,12 @@ install_build_deps() {
 	# Compare the recorded dependency spec, not the resolved version: upstream may declare a range.
 	spec="$(sed -n 's/.*"@napi-rs\/cli"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$NAPI_CLI_DIR/package.json" | sed -n 1p)"
 	if [ "$spec" != "$napi_version" ] || [ ! -f "$NAPI_CLI_DIR/node_modules/@napi-rs/cli/dist/cli.js" ]; then
-		# A plain `bun install` in packages/natives resolves the whole monorepo (~400 packages, ~1.5 GB);
-		# the CLI standalone costs ~67 packages / ~56 MB.
+		# A monorepo install resolves ~1.5 GB; the CLI standalone is ~56 MB.
 		msg "installing @napi-rs/cli@$napi_version standalone"
 		(cd "$NAPI_CLI_DIR" && bun add --ignore-scripts "@napi-rs/cli@$napi_version") || die "bun add failed"
 	fi
 	installed="$(json_version "$NAPI_CLI_DIR/node_modules/@napi-rs/cli/package.json")"
-	# The device build runs build-bindings.ts from the source tree, which resolves the CLI from
-	# packages/natives/node_modules: a real tree must carry the same CLI; our own symlink points at the
-	# standalone copy.
+	# The device build resolves the CLI from packages/natives/node_modules, so a real tree needs it too.
 	if [ -e "$SRC/packages/natives/node_modules" ] && [ ! -L "$SRC/packages/natives/node_modules" ]; then
 		src_cli="$(json_version "$SRC/packages/natives/node_modules/@napi-rs/cli/package.json")"
 		if [ "$src_cli" != "$installed" ]; then
@@ -215,16 +212,11 @@ uses_audiopus_sys() { grep -qx 'name = "audiopus_sys"' "$SRC/Cargo.lock" 2>/dev/
 
 prepare_opus() {
 	local base src dir
-	# Up to omp 18.1.22 the `opus` crate vendored its sources through audiopus_sys. Since 18.2.0 it uses
-	# opusic-sys, whose default `bundled` feature builds opus with cmake from its own tree (reading
-	# ANDROID_NDK_HOME, not LIBOPUS_*); nothing consumes a libopus from here, and on a clean machine the
-	# audiopus_sys sources are not even fetched.
+	# audiopus_sys declares no rerun-if-env-changed, so the build dir goes first; newer versions use opusic-sys.
 	uses_audiopus_sys || {
 		msg "audiopus_sys is not in this version's dependency tree; opusic-sys builds its own opus"
 		return 0
 	}
-	# audiopus_sys declares no rerun-if-env-changed, so Cargo reuses the rlib left by an earlier
-	# (host-ABI) cmake run. Remove the build directory on every call.
 	rm -rf "$CARGO_TARGET/aarch64-linux-android/ci/build/audiopus_sys"
 	if [ -f "$OPUS_PREFIX/lib/libopus.a" ]; then
 		msg "opus already built: $OPUS_PREFIX"
@@ -288,10 +280,7 @@ cross_build() { # $1 = the version the artifact must report
 	finalize_artifact "${1:-}"
 }
 
-# The loader rejects an addon whose __piNativesBuildVersion() is not the installed package version, and current
-# release sources leave that 64-byte slot empty: upstream's build-bindings.ts wrapper writes it after linking.
-# This path drives the napi CLI directly, so it has to run upstream's stamp tool itself. Releases before the
-# slot have no tool and no slot; their per-release napi name is the identity instead.
+# The loader compares the stamped slot with the installed package version; upstream's stamp tool writes it.
 stamp_artifact() { # $1 = addon path
 	local addon="$1" tool="$SRC/scripts/stamp-native-version.ts"
 	[ -f "$tool" ] || return 0
@@ -403,9 +392,8 @@ remote_bun_root() { # a snippet that prints the device's root in use
 	printf '%s; printf "%%s" "$r"' "$REMOTE_ROOT_PROBE"
 }
 
-# Every command the tool runs on the device goes through this: it pins BUN_INSTALL so bun installs into
-# the root in use rather than its own default.
 remote_bun_env() { # a snippet that runs a device command inside the root in use
+	# bun installs where BUN_INSTALL points, not where PATH does.
 	printf '%s; BUN_INSTALL="$r"; export BUN_INSTALL; PATH="$r/bin:$PATH"; export PATH' "$REMOTE_ROOT_PROBE"
 }
 
@@ -458,9 +446,7 @@ ensure_device_version() { # $1 = target version; installs omp on the device when
 	remote_bun "install -g $(printf '%q' "@oh-my-pi/pi-coding-agent@$want")" || die "failed to install omp on the device"
 }
 
-# The scratch dir this half uploads into: OMP_TERMUX_CACHE_HOME when it is set, else the directory the tool
-# uses when nothing is set, relative to the device's HOME. An absolute value is a device path already, and
-# nothing here asks the device: the default costs no round trip.
+# Relative to the device's HOME unless absolute; the default matches the tool's own scratch dir.
 SCRATCH="${OMP_TERMUX_CACHE_HOME:-.cache/omp-termux}"
 
 remote_scratch() { # a snippet that resolves the scratch to an absolute path and refuses / or $HOME

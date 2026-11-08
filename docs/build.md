@@ -30,3 +30,5 @@ inside `tmux`).
 ```
 
 `./dev/omp-termux-dev help` lists every verb (`build`, `install`, `status`, `verify`, `device`, `doctor`).
+
+The design behind the build half is in [`topic/build.md`](topic/build.md).
