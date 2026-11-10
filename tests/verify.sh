@@ -1,4 +1,5 @@
 #!/bin/sh
+# shellcheck shell=bash
 # Local verification: static gates, then the device-side paths against a fake device.
 #
 #   sh tests/verify.sh
@@ -6,7 +7,8 @@
 # The device sections need out/pi_natives.android-arm64.node (run `./dev/omp-termux-dev build <version>` first);
 # without it they are skipped, while the plain-machine and build-half sections above still run. Every section
 # runs under `env -i` with its own HOME/TMPDIR/PREFIX/XDG_*; the device ones stub bun/curl and force device mode
-# with TERMUX_VERSION. Every path that may be removed is a hard-coded /tmp path and asserted below.
+# with TERMUX_VERSION. The stubs answer every URL on the tool's egress allowlist, so the run never reaches the
+# network. Every path that may be removed is a hard-coded /tmp path and asserted below.
 set -u
 R=$(cd "$(dirname "$0")/.." && pwd)
 [ -n "$R" ] && [ -f "$R/bin/omp-termux" ] || { echo "verify: cannot locate the repository; refusing to run" >&2; exit 1; }
@@ -16,12 +18,19 @@ ok() { printf '  ok   %s\n' "$1"; }
 no() { printf '  FAIL %s\n' "$1"; fails=$((fails + 1)); }
 chk() { if [ "$2" = "$3" ]; then ok "$1"; else no "$1 (got [$2] want [$3])"; fi; }
 nonzero() { [ "$1" -ne 0 ] && echo non0 || echo zero; }
+# Progress and warnings live on stderr (`==> ...`, `warning: ...`, and the optional `  hint: ...`); results and
+# tables live on stdout. Blank lines are allowed because the PATH hint separates its advice that way.
+stderr_clean() { ! grep -qvE '^(|==> |warning:|  hint: )' "$1"; }
+stdout_clean() { ! grep -qE '^(==> |warning:)' "$1"; }
 
 echo "== static gates"
 command -v python3 >/dev/null 2>&1 || { echo "verify: python3 is required" >&2; exit 1; }
 bash -n "$R/bin/omp-termux" && ok "bash -n bin/omp-termux" || no "bash -n bin/omp-termux"
 bash -n "$R/dev/omp-termux-dev" && ok "bash -n dev/omp-termux-dev" || no "bash -n dev/omp-termux-dev"
 sh -n "$R/install.sh" && ok "sh -n install.sh" || no "sh -n install.sh"
+command -v shellcheck >/dev/null 2>&1 || { echo "verify: shellcheck is required (install it first)" >&2; exit 1; }
+shellcheck -S warning "$R/bin/omp-termux" "$R/dev/omp-termux-dev" "$R/install.sh" "$R/tests/verify.sh" &&
+	ok "shellcheck -S warning" || no "shellcheck -S warning"
 if python3 -c 'import yaml' 2>/dev/null; then
 	python3 -c "import yaml,pathlib;yaml.safe_load(pathlib.Path('$R/.github/workflows/build.yml').read_text())" &&
 		ok "CI YAML parses" || no "CI YAML does not parse"
@@ -36,6 +45,38 @@ bash "$R/bin/omp-termux" status --json >/dev/null 2>&1; chk "status --json refus
 env -i TERMUX_VERSION=0.118 HOME=/tmp PATH="/usr/local/bin:/usr/bin:/bin" \
 	bash "$R/dev/omp-termux-dev" status --json >/dev/null 2>&1
 chk "build half: status --json refused" "$?" "1"
+
+# Every URL the scripts can reach is on the privacy allowlist: this repository's raw tree and releases, bun's
+# Android zip, upstream's clone and releases, and the PR diff the build half applies.
+REPO_SLUG="$(sed -n 's/^REPO="\${OMP_TERMUX_REPO:-\([^}]*\)}".*/\1/p' "$R/bin/omp-termux" | head -n1)"
+UP_SLUG="$(sed -n 's/^UPSTREAM_REPO="\([^"]*\)".*/\1/p' "$R/bin/omp-termux" | head -n1)"
+urls="$(grep -hoE 'https?://[^"'"'"' ]+' "$R/bin/omp-termux" "$R/dev/omp-termux-dev" "$R/install.sh" | sort -u)"
+nurl=0
+egress_bad=0
+for u in $urls; do
+	nurl=$((nurl + 1))
+	case "$u" in
+		https://raw.githubusercontent.com/*) ;;
+		https://github.com/oven-sh/bun/*) ;;
+		"https://github.com/$REPO_SLUG/"*) ;;
+		'https://github.com/$REPO/'*) ;;
+		"https://github.com/$UP_SLUG"*) ;;
+		'https://github.com/$UPSTREAM_REPO'*) ;;
+		"https://patch-diff.githubusercontent.com/raw/$UP_SLUG/"*) ;;
+		'https://patch-diff.githubusercontent.com/raw/$UPSTREAM_REPO/'*) ;;
+		*)
+			no "egress: $u is not on the allowlist"
+			egress_bad=1
+			;;
+	esac
+done
+if [ "$nurl" -eq 0 ]; then
+	no "egress: no URL found in the scripts"
+elif [ "$egress_bad" -eq 0 ]; then
+	ok "egress: $nurl URL(s), all on the allowlist"
+fi
+grep -qE '(ssh|scp)://' "$R/bin/omp-termux" "$R/dev/omp-termux-dev" "$R/install.sh" &&
+	no "egress: the device target is written as a URL" || ok "egress: the device target is not a URL"
 
 
 echo "== a plain machine: the tool runs and reports nothing installed"
@@ -54,12 +95,18 @@ ws() {
 ws help; chk "plain machine: help exits 0" "$?" "0"
 # The tool has no mode: it reports the pi-natives of whatever machine runs it, and there are none here.
 ws status; chk "status exits 0 with nothing installed" "$?" "0"
-grep -Eq "^tool +: $R/bin/omp-termux" /tmp/vws.log && ok "status reports this copy" || no "status does not name the running copy"
+grep -Eq "^tool +omp-termux v[0-9.]+ \([0-9a-f]{12}\)$" /tmp/vws.log && ok "status reports this copy's version" ||
+	no "status does not report the running copy's version"
+grep -Fq "tool  $R/bin/omp-termux" /tmp/vws.log && ok "status names the running copy" ||
+	no "status does not name the running copy"
+grep -Eq "^ *omp +none$" /tmp/vws.log && ok "status reports no omp" || no "status hides the missing omp"
 ws doctor; chk "doctor exits 0 anywhere" "$?" "0"
-grep -Eq '^  Termux +: not detected' /tmp/vws.log && ok "doctor reports what it sees" || no "doctor reports nothing"
+grep -Eq '^termux +not detected' /tmp/vws.log && ok "doctor reports what it sees" || no "doctor reports nothing"
 ws verify; chk "verify with no pi-natives exits !=0" "$(nonzero $?)" "non0"
 grep -q 'no @oh-my-pi/pi-natives on this machine' /tmp/vws.log && ok "verify says what is missing" ||
 	{ no "verify does not name what is missing"; tail -1 /tmp/vws.log | sed 's|^|       |'; }
+grep -q 'omp-termux: error: no @oh-my-pi/pi-natives on this machine' /tmp/vws.log &&
+	ok "verify reports the failure on stderr" || no "verify does not use the error prefix"
 ws build 18.3.4; chk "build is not a tool verb" "$(nonzero $?)" "non0"
 grep -q 'unknown verb: build' /tmp/vws.log && ok "build: the tool says so" || no "build: the tool is quiet"
 # The tool puts its own copy in place while installing an addon; that copy is what uninstall-self removes.
@@ -150,7 +197,12 @@ fake_curl() {
 		printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"/tmp/v-curl.log"\ncase "$*" in\n'
 		printf '*github.com/can1357/oh-my-pi/releases/latest*) echo "location: https://github.com/can1357/oh-my-pi/releases/tag/v%s"; exit 0 ;;\n' "$2"
 		printf '*omp-termux/releases/latest*) echo "location: https://github.com/hmeqo/omp-termux/releases/tag/omp-%s"; exit 0 ;;\n' "$3"
-		printf 'esac\ncase "$*" in *file://*) exec %s "$@" ;; esac\n' "$REAL_CURL"
+		printf 'esac\ncase "$*" in\n'
+		printf '*example.invalid/missing*) echo "404 https://example.invalid/missing/pi_natives.android-arm64.node"; exit 22 ;;\n'
+		printf '*example.invalid/denied*) echo "403 https://example.invalid/denied/pi_natives.android-arm64.node"; exit 22 ;;\n'
+		printf '*example.invalid*) echo "504 https://example.invalid/r/pi_natives.android-arm64.node"; exit 22 ;;\n'
+		printf 'esac\n'
+		printf 'case "$*" in *file://*) exec %s "$@" ;; esac\n' "$REAL_CURL"
 		printf 'echo "fake curl: unexpected URL: $*" >&2; exit 22\n'
 	} >"$1"
 	chmod +x "$1"
@@ -196,12 +248,15 @@ case "\$1" in
 esac
 case "\${2:-}" in
 	*/native/index.js)
-		# $T/bunfail models "addon present but does not load"; a tree with no addon cannot load either.
-		[ -f "$T/bunfail" ] && exit 1
-		[ -f "\${2%/native/index.js}/native/pi_natives.android-arm64.node" ] || exit 1
+		d="\${2%/native/index.js}"
+		# $T/bunfail models "addon present but does not load"; an empty directory cannot load either.
+		if [ -f "$T/bunfail" ] || [ ! -f "\$d/native/pi_natives.android-arm64.node" ]; then
+			echo "android-arm64|0|countTokens"; exit 1
+		fi
+		echo "android-arm64|17|"; exit 0
 		;;
 esac
-if [ "\$1" = install ] && [ "\$2" = -g ]; then
+if [ "\$1" = install ] && [ "\$2" = -g ] && [ -z "\${FAKE_BUN_NO_PROVISION:-}" ]; then
 	v="\${3#@oh-my-pi/pi-coding-agent@}"
 	root="\${BUN_INSTALL:-$T/.bun}"
 	p="\$root/install/cache/@oh-my-pi/pi-natives@\$v@@@1"
@@ -218,7 +273,7 @@ if [ "\$1" = install ] && [ "\$2" = -g ]; then
 	fi
 	# Real bun links the package's bin entry into <root>/bin; omp itself and the smoke test need that copy.
 	mkdir -p "\$root/bin"
-	printf '#!/bin/sh\necho "omp \$*"\n' >"\$root/bin/omp"
+	printf '#!/bin/sh\n[ -f "%s/ompfail" ] && exit 1\necho "omp \$*"\n' "$T" >"\$root/bin/omp"
 	chmod +x "\$root/bin/omp"
 fi
 if [ "\$1" = remove ] && [ "\$2" = -g ]; then
@@ -247,7 +302,7 @@ chk "bootstrap: provisions omp" "$(grep -c "install -g @oh-my-pi/pi-coding-agent
 # (and never get as far as curl).
 PATH="$FB" "$REAL_SH" "$R/install.sh" >/tmp/v7.log 2>&1
 chk "bootstrap: without bash exits !=0" "$(nonzero $?)" "non0"
-grep -q 'install: bash is required' /tmp/v7.log && ok "bootstrap: says bash is required" || no "bootstrap: silent about bash"
+grep -q 'install: error: bash is required' /tmp/v7.log && ok "bootstrap: says bash is required" || no "bootstrap: silent about bash"
 
 CACHE="$T/.local/opt/omp-termux/cache/self-update"
 GLOBAL="$T/.bun/install/global/node_modules/@oh-my-pi"   # bun's global tree in the fake device
@@ -259,6 +314,92 @@ dev() { # $1 = release base, $2 = verb, $3 = argument, $4 = OMP_TERMUX_NO_UPDATE
 		OMP_TERMUX_RELEASE_BASE="$1" ${4:+OMP_TERMUX_NO_UPDATE_CHECK=$4} \
 		"$TOOL" "${2:-install}" ${3:+"$3"}
 }
+
+# The fake device now carries a global CLI too, as a bun -g install leaves it; status and verify have an omp to
+# report from here on.
+mkdir -p "$GLOBAL/pi-coding-agent"
+pkg_json "$V0" >"$GLOBAL/pi-coding-agent/package.json"
+
+echo "== status and verify: the tables are on stdout, progress is on stderr"
+dev "file://$R19" status >/tmp/vstatus-out.log 2>/tmp/vstatus-err.log
+chk "status separation: exits 0" "$?" "0"
+grep -Eq "^tool +omp-termux v[0-9.]+ \([0-9a-f]{12}\)$" /tmp/vstatus-out.log &&
+	ok "status: the tool row is on stdout" || no "status: no tool row on stdout"
+grep -Eq "^omp +$V0$" /tmp/vstatus-out.log && ok "status: the omp row is on stdout" || no "status: no omp row"
+grep -Eq "^addon +$V0 +[^ ]+ +loaded$" /tmp/vstatus-out.log &&
+	ok "status: the loaded addon row is on stdout" || no "status: no loaded addon row"
+grep -Eq '^paths +bun +~/\.bun$' /tmp/vstatus-out.log && ok "status: paths collapse \$HOME to ~" ||
+	no "status: paths are not collapsed"
+grep -Eq '^ +omp +~/\.bun/bin/omp$' /tmp/vstatus-out.log && ok "status: names the omp it found" ||
+	no "status: hides the omp path"
+stderr_clean /tmp/vstatus-err.log && ok "status: stderr only carries progress and warnings" ||
+	{ no "status: an unexpected line is on stderr"; sed 's|^|       |' /tmp/vstatus-err.log; }
+stdout_clean /tmp/vstatus-out.log && ok "status: stdout carries no progress" || no "status: progress leaked to stdout"
+
+dev "file://$R19" verify >/tmp/vverify-out.log 2>/tmp/vverify-err.log
+chk "verify separation: exits 0" "$?" "0"
+grep -Eq "^addon +$V0 +android-arm64 +[0-9]+ exports +ok \(loaded\)$" /tmp/vverify-out.log &&
+	ok "verify: the loaded row is on stdout" || no "verify: no loaded row"
+grep -Eq "^omp +$V0 +starts +ok$" /tmp/vverify-out.log && ok "verify: the omp smoke test is on stdout" ||
+	no "verify: no omp row"
+chk "verify: the ok result is the last stdout line" "$(tail -n1 /tmp/vverify-out.log)" "omp-termux: verify ok"
+stderr_clean /tmp/vverify-err.log && ok "verify: stderr only carries progress and warnings" ||
+	{ no "verify: an unexpected line is on stderr"; sed 's|^|       |' /tmp/vverify-err.log; }
+stdout_clean /tmp/vverify-out.log && ok "verify: stdout carries no progress" || no "verify: progress leaked to stdout"
+
+env -i HOME="$T" TMPDIR="$T/tmp" PREFIX="$T/usr" XDG_CONFIG_HOME="$T/.config" XDG_CACHE_HOME="$T/.cache" \
+	TERMUX_VERSION=0.118 PATH="$FB/tools:$FB" OMP_TERMUX_RAW_BASE="file://$RAW" OMP_TERMUX_RELEASE_BASE="file://$R19" \
+	OMP_TERMUX_VERBOSE=1 "$TOOL" verify >/tmp/vverbose.log 2>&1
+chk "verbose verify: exits 0" "$?" "0"
+grep -Eq "^addon +$V0 +android-arm64 +[0-9]+ exports +ok \(loaded\)$" /tmp/vverbose.log &&
+	ok "verbose verify: export counts are printed" || no "verbose verify: no export counts"
+
+: >"$T/bunfail"
+dev "file://$R19" verify >/tmp/vverifyfail.log 2>&1
+chk "verify failure: exits !=0" "$(nonzero $?)" "non0"
+grep -q 'the addon the device loads does not load' /tmp/vverifyfail.log &&
+	ok "verify failure: names the loaded addon" || { no "verify failure: silent about the addon"; tail -3 /tmp/vverifyfail.log | sed 's|^|       |'; }
+grep -q 'omp-termux: error: verification failed' /tmp/vverifyfail.log &&
+	ok "verify failure: ends with the error" || no "verify failure: no error line"
+rm -f "$T/bunfail"
+
+mkdir -p "$T/.bun/install/cache/@oh-my-pi/pi-natives@0.0.1@@@1/native"
+pkg_json "0.0.1" >"$T/.bun/install/cache/@oh-my-pi/pi-natives@0.0.1@@@1/package.json"
+dev "file://$R19" verify >/tmp/vleftover.log 2>&1
+chk "leftover failure: the run still exits 0" "$?" "0"
+grep -q 'a leftover addon at .* does not load' /tmp/vleftover.log &&
+	ok "leftover failure: warned, not fatal" || { no "leftover failure: no warning"; tail -3 /tmp/vleftover.log | sed 's|^|       |'; }
+grep -Eq '^addon +0\.0\.1 +failed:' /tmp/vleftover.log && ok "leftover failure: the row says failed" ||
+	no "leftover failure: no failed row"
+rm -rf "$T/.bun/install/cache/@oh-my-pi/pi-natives@0.0.1@@@1"
+
+echo "== scratch: two verifies run at once, and a stale run directory is reclaimed"
+dev "file://$R19" verify >/tmp/vpar1.log 2>&1 & par1=$!
+dev "file://$R19" verify >/tmp/vpar2.log 2>&1 & par2=$!
+wait "$par1"; rc1=$?
+wait "$par2"; rc2=$?
+chk "parallel verify: the first run exits 0" "$rc1" "0"
+chk "parallel verify: the second run exits 0" "$rc2" "0"
+grep -q '^omp-termux: verify ok$' /tmp/vpar1.log && grep -q '^omp-termux: verify ok$' /tmp/vpar2.log &&
+	ok "parallel verify: both report ok" || no "parallel verify: a run did not report ok"
+chk "parallel verify: leaves no scratch root behind" \
+	"$([ -d "$T/.cache/omp-termux" ] && echo present || echo gone)" "gone"
+
+sh -c 'exit 0' & deadpid=$!
+wait "$deadpid"
+sleep 300 & livepid=$!
+mkdir -p "$T/.cache/omp-termux/run.$deadpid" "$T/.cache/omp-termux/run.$livepid"
+printf x >"$T/.cache/omp-termux/run.$deadpid/marker"
+dev "file://$R19" verify >/tmp/vreap.log 2>&1
+chk "scratch reaping: the verify run exits 0" "$?" "0"
+chk "scratch reaping: a dead run.<pid> is removed" \
+	"$([ -d "$T/.cache/omp-termux/run.$deadpid" ] && echo kept || echo gone)" "gone"
+chk "scratch reaping: a live run.<pid> is kept" \
+	"$([ -d "$T/.cache/omp-termux/run.$livepid" ] && echo kept || echo gone)" "kept"
+kill "$livepid" 2>/dev/null || true
+wait "$livepid" 2>/dev/null || true
+rm -rf "$T/.cache/omp-termux/run.$livepid"
+rmdir "$T/.cache/omp-termux" 2>/dev/null || true
 
 : >"$LOG"; rm -f "$CACHE"
 dev "file://$R19" install >/tmp/v2.log 2>&1; chk "install (no argument) exits 0" "$?" "0"
@@ -281,10 +422,14 @@ grep -q 'dropping the stale global entries: @oh-my-pi/pi-natives' /tmp/vkeep.log
 	ok "kept entry: dropped anyway" || { no "kept entry: left in the manifest"; tail -3 /tmp/vkeep.log | sed 's|^|       |'; }
 chk "kept entry: bun is asked to remove it" "$(grep -c 'remove -g @oh-my-pi/pi-natives' "$LOG")" "1"
 rm -f "$T/.bun/install/global/package.json"
+# Back to a cache-only device: the sections below model one whose omp bun never placed under the global tree.
+rm -rf "$GLOBAL"
 
 fake_curl "$FB/curl" "$V1" "$V1"   # this repository publishes $V1 now, which $R20 serves
 : >"$LOG"; rm -f "$CACHE"
 dev "file://$R20" install latest >/tmp/v3.log 2>&1; chk "install latest exit=0" "$?" "0"
+grep -q "^omp-termux: omp $V1 ready ([0-9][0-9]* addon copies)$" /tmp/v3.log &&
+	ok "install latest: reports the result on stdout" || { no "install latest: no result line"; tail -3 /tmp/v3.log | sed 's|^|       |'; }
 chk "calls bun to upgrade" "$(grep -o "install -g @oh-my-pi/pi-coding-agent@$V1" "$LOG" | head -1)" "install -g @oh-my-pi/pi-coding-agent@$V1"
 chk "addon in place in the new package" "$(ls "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V1@@@1/native" 2>/dev/null | tr '\n' ' ')" "pi_natives.android-arm64.node "
 chk "hints bun's bin dir once it holds omp" "$(grep -c "$T/.bun/bin is not in your PATH yet" /tmp/v3.log)" "1"
@@ -311,9 +456,27 @@ rm -f "$T/bunfail"
 chk "broken addon: the run fails on the load test" "$(nonzero "$loadrc")" "non0"
 grep -q 'the installed addon does not load; reinstalling it' /tmp/vload.log &&
 	ok "broken addon: says it is reinstalling" || { no "broken addon: silent about the reload"; tail -3 /tmp/vload.log | sed 's|^|       |'; }
+grep -q "omp-termux: error: the addon at .* does not load" /tmp/vload.log &&
+	ok "broken addon: the failure names the addon" || { no "broken addon: no addon error"; tail -3 /tmp/vload.log | sed 's|^|       |'; }
+grep -q "  hint: run 'omp-termux verify' for the loader output" /tmp/vload.log &&
+	ok "broken addon: the failure carries the verify hint" || no "broken addon: no hint line"
 chk "broken addon: nothing to do is not printed" "$(grep -c 'nothing to do' /tmp/vload.log)" "0"
 chk "broken addon: the release is fetched again" "$(grep -c 'pi_natives.android-arm64.node' "$CURL_LOG")" "1"
 chk "broken addon: provisions the omp it needs" "$(grep -c 'install -g @oh-my-pi/pi-coding-agent@' "$LOG" 2>/dev/null || true)" "1"
+
+# A device whose omp cannot start is not "current": the install must try the repair, and fail if it stays broken.
+printf '#!/bin/sh\nexit 1\n' >"$T/.bun/bin/omp"
+chmod +x "$T/.bun/bin/omp"
+: >"$T/ompfail"; : >"$LOG"
+dev "file://$R20" install >/tmp/vompfail.log 2>&1; omprc=$?
+rm -f "$T/ompfail"
+printf '#!/bin/sh\necho "omp $*"\n' >"$T/.bun/bin/omp"
+chmod +x "$T/.bun/bin/omp"
+chk "broken omp: the run fails" "$(nonzero "$omprc")" "non0"
+grep -q 'nothing to do' /tmp/vompfail.log && no "broken omp: reported nothing to do" || ok "broken omp: does not report nothing to do"
+grep -q 'omp does not start after the install' /tmp/vompfail.log &&
+	ok "broken omp: says the install left it broken" || { no "broken omp: silent about the failure"; tail -3 /tmp/vompfail.log | sed 's|^|       |'; }
+
 
 # Upstream is ahead of what this repository publishes: that is news, not a failure.
 fake_curl "$FB/curl" "$V2" "$V1"   # upstream two ahead of what is published here
@@ -326,6 +489,7 @@ fake_curl "$FB/curl" "$V1" "$V1"
 # Behind and the release it needs is gone: a real failure, and nothing on the device changes — a kept scope
 # entry included, which is only dropped on the paths that go on to act.
 rm -rf "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V1@@@1"
+rm -f "$T"/.bun/install/cache/@oh-my-pi/pi-natives@*/native/pi_natives.android-arm64.node "$T/.bun/install/global/node_modules/@oh-my-pi/pi-natives/native/pi_natives.android-arm64.node" 2>/dev/null || true
 mkdir -p "$T/.bun/install/global"
 printf '{"dependencies":{"@oh-my-pi/pi-coding-agent":"%s","@oh-my-pi/pi-natives":"^%s"}}' "$V0" "$V2" >"$T/.bun/install/global/package.json"
 : >"$LOG"; dev "file:///tmp/vmissing" install latest >/tmp/v4.log 2>&1
@@ -335,7 +499,25 @@ chk "needed release missing: the kept entry is left alone" "$(grep -c 'remove -g
 grep -q 'nothing was changed' /tmp/v4.log && ok "says nothing was changed" || no "silent about nothing was changed"
 rm -f "$T/.bun/install/global/package.json"
 
+# Each HTTP status class names what happened and changes nothing.
+drop_all
+: >"$LOG"; dev "https://example.invalid/missing" install latest >/tmp/v404.log 2>&1
+chk "missing release (404): exits !=0" "$(nonzero $?)" "non0"
+grep -q "no release for $V1 at https://example.invalid/missing/pi_natives.android-arm64.node; nothing was changed" /tmp/v404.log &&
+	ok "404: names the version and the asset URL" || { no "404: wrong message"; tail -2 /tmp/v404.log | sed 's|^|       |'; }
+chk "404: bun not called" "$(grep -c 'install -g' "$LOG" 2>/dev/null || true)" "0"
+: >"$LOG"; dev "https://example.invalid/denied" install latest >/tmp/v403.log 2>&1
+chk "refused release (403): exits !=0" "$(nonzero $?)" "non0"
+grep -q "the release server refused $V1 (HTTP 403); nothing was changed" /tmp/v403.log &&
+	ok "403: reads as a refusal" || { no "403: wrong message"; tail -2 /tmp/v403.log | sed 's|^|       |'; }
+: >"$LOG"; dev "https://example.invalid/r" install latest >/tmp/v5xx.log 2>&1
+chk "failing server (504): exits !=0" "$(nonzero $?)" "non0"
+grep -q "the release server failed (HTTP 504) for $V1; nothing was changed - run the install again" /tmp/v5xx.log &&
+	ok "504: reads as a retry" || { no "504: wrong message"; tail -2 /tmp/v5xx.log | sed 's|^|       |'; }
+chk "504: bun not called" "$(grep -c 'install -g' "$LOG" 2>/dev/null || true)" "0"
+
 # A release whose addon reports another version is a wrong or truncated download, not an install.
+rm -f "$T"/.bun/install/cache/@oh-my-pi/pi-natives@*/native/pi_natives.android-arm64.node "$T/.bun/install/global/node_modules/@oh-my-pi/pi-natives/native/pi_natives.android-arm64.node" 2>/dev/null || true
 : >"$LOG"; dev "file://$R19" install latest >/tmp/vwrong.log 2>&1
 chk "wrong release exits !=0" "$(nonzero $?)" "non0"
 grep -q "the downloaded addon is for $V0, not $V1" /tmp/vwrong.log && ok "names both versions" ||
@@ -361,12 +543,12 @@ chk "device ahead: addon untouched" "$(sha256sum "$FA" | cut -d' ' -f1)" "$addon
 
 # the no-argument form hits the same guard, with the addon gone: a device whose owner upgraded omp by hand
 rm -f "$FA"
+rm -f "$T"/.bun/install/cache/@oh-my-pi/pi-natives@*/native/pi_natives.android-arm64.node "$T/.bun/install/global/node_modules/@oh-my-pi/pi-natives/native/pi_natives.android-arm64.node" 2>/dev/null || true
+
 : >"$LOG"; dev "file://$R19" install >/tmp/vnoarg.log 2>&1
 chk "no argument, device ahead exits !=0" "$(nonzero $?)" "non0"
 grep -q "no build published here for the omp you run: $V2 (newest: omp-$V1)" /tmp/vnoarg.log &&
 	ok "no argument, device ahead: names both versions" || { no "no argument, device ahead: does not name them"; tail -2 /tmp/vnoarg.log | sed 's|^|       |'; }
-grep -Eq "you have +: omp-$V2 \(addon missing\)" /tmp/vnoarg.log &&
-	ok "no argument, device ahead: panel says the addon is missing" || no "no argument: panel hides the missing addon"
 chk "no argument, device ahead: bun not called" "$(grep -c 'install -g' "$LOG" 2>/dev/null || true)" "0"
 
 # The refusal covers the targets the tool picked; a version the caller names is theirs to step back to.
@@ -379,7 +561,7 @@ rm -rf "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V2@@@1"   # later sections e
 # A global pi-natives left over from an older install: bun keeps that manifest entry and hoists the newest
 # version its range allows, so the tree resolves to a release this repository never built while the omp the
 # device runs is the published one. The tool has to bring that tree back to the published version instead of
-# reading it as a device ahead of us, and the leftover copy must not decide the load test.
+# reading it as a device ahead of us.
 mkdir -p "$GLOBAL/pi-natives/native" "$GLOBAL/pi-coding-agent" "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V2@@@1/native"
 pkg_json "$V2" >"$GLOBAL/pi-natives/package.json"
 pkg_json "$V0" >"$GLOBAL/pi-coding-agent/package.json"
@@ -397,8 +579,6 @@ dev "file://$R19" install latest >/tmp/vstale.log 2>&1
 chk "stale tree: exits 0" "$?" "0"
 grep -q 'no build published here' /tmp/vstale.log && no "stale tree: refused as a device ahead" ||
 	ok "stale tree: not refused as a device ahead"
-grep -q "the global tree resolves $V2; bringing it back to $V0" /tmp/vstale.log &&
-	ok "stale tree: says it is bringing the tree back" || { no "stale tree: silent about the tree"; tail -3 /tmp/vstale.log | sed 's|^|       |'; }
 grep -q 'dropping the stale global entries: @oh-my-pi/pi-natives @oh-my-pi/pi-utils' /tmp/vstale.log &&
 	ok "stale tree: names every entry it drops" || { no "stale tree: silent about the entries"; tail -3 /tmp/vstale.log | sed 's|^|       |'; }
 grep -q 'remove -g @oh-my-pi/pi-natives' "$LOG" && ok "stale tree: the natives entry is dropped" ||
@@ -413,9 +593,8 @@ chk "stale tree: the addon's package is named to force the tree" \
 chk "stale tree: the tree omp loads becomes $V0" \
 	"$(python3 -c "import json;print(json.load(open('$GLOBAL/pi-natives/package.json'))['version'])")" "$V0"
 chk "stale tree: the addon lands in the tree omp loads" "$(ls "$GLOBAL/pi-natives/native" | tr '\n' ' ')" "pi_natives.android-arm64.node "
-grep -q "load failed (not the pi-natives this device loads): .*pi-natives@$V2@@@1" /tmp/vstale.log &&
-	ok "stale tree: the leftover copy is reported, not fatal" || { no "stale tree: no word about the leftover"; grep 'loading through' /tmp/vstale.log | sed 's|^|       |'; }
-grep -q 'all good' /tmp/vstale.log && ok "stale tree: ends verified" || no "stale tree: never verified"
+chk "stale tree: the result counts the leftover copies" \
+	"$(grep -c "^omp-termux: omp $V0 ready ([0-9][0-9]* addon copies, [0-9][0-9]* leftover)\$" /tmp/vstale.log)" "1"
 : >"$LOG"
 dev "file://$R19" install >/tmp/vstale2.log 2>&1
 chk "stale tree: the second run exits 0" "$?" "0"
@@ -451,8 +630,8 @@ chk "update-self on identical content: already up to date" "$(dev "file://$R19" 
 printf '\n# moved on\n' >>"$RAW/bin/omp-termux"
 rm -f "$CACHE"
 dev "file://$R19" status >/tmp/vcache.log 2>&1   # populates the cached view of the world
-chk "status reports the published build" "$(grep -c "newest here: omp-$V1" /tmp/vcache.log)" "1"
-chk "status reports the tool version" "$(grep -Ec '^version +: v[0-9.]+ \([0-9a-f]{12}\)' /tmp/vcache.log)" "1"
+chk "status reports the published build" "$(grep -Ec "^newest +omp-$V1$" /tmp/vcache.log)" "1"
+chk "status reports the tool version" "$(grep -Ec '^tool +omp-termux v[0-9.]+ \([0-9a-f]{12}\)$' /tmp/vcache.log)" "1"
 chk "hint: one line when main differs" "$(dev "file://$R19" status 2>&1 >/dev/null | grep -c 'omp-termux update available:')" "1"
 chk "hint: names both versions and hashes" \
 	"$(dev "file://$R19" status 2>&1 >/dev/null | grep -c 'update available: v[0-9.]* ([0-9a-f]\{12\}) -> v[0-9.]* ([0-9a-f]\{12\}); run')" "1"
@@ -493,7 +672,7 @@ cp "$R/out/pi_natives.android-arm64.node" "$T/.cache/.bun/install/global/node_mo
 : >"$LOG"
 dev "file://$R20" install latest >/tmp/vroots.log 2>&1
 chk "two roots: upgrade exits 0" "$?" "0"
-grep -q "installing omp $V1 on this device" /tmp/vroots.log && ok "two roots: picked the root carrying omp" || no "two roots: picked the wrong root"
+grep -q "installing omp $V1 (currently " /tmp/vroots.log && ok "two roots: picked the root carrying omp" || no "two roots: picked the wrong root"
 chk "two roots: root pinned (BUN_INSTALL)" "$(grep -o "BUN_INSTALL=$T/.cache/.bun\$" "$LOG" | head -1)" "BUN_INSTALL=$T/.cache/.bun"
 chk "two roots: new package lands in that root" "$(ls "$T/.cache/.bun/install/cache/@oh-my-pi/pi-natives@$V1@@@1/native" 2>/dev/null | tr '\n' ' ')" "pi_natives.android-arm64.node "
 
@@ -503,8 +682,10 @@ rm -f "$T/.cache/.bun/bin/omp" "$T/.bun/bin/omp"
 : >"$LOG"
 dev "file://$R20" install latest >/tmp/vnobin.log 2>&1
 chk "missing bin/omp: exits 0" "$?" "0"
-grep -q 'has no bin/omp; reinstalling' /tmp/vnobin.log && ok "missing bin/omp: says why it reinstalls" ||
-	{ no "missing bin/omp: silent about the repair"; tail -3 /tmp/vnobin.log | sed 's|^|       |'; }
+grep -q "installing omp $V1 (currently $V1)" /tmp/vnobin.log &&
+	ok "missing bin/omp: reinstalls the same version to restore the bin" ||
+	{ no "missing bin/omp: no reinstall for the missing bin"; tail -3 /tmp/vnobin.log | sed 's|^|       |'; }
+chk "missing bin/omp: bun is asked to reinstall" "$(grep -c "install -g @oh-my-pi/pi-coding-agent@$V1" "$LOG")" "1"
 [ -x "$T/.cache/.bun/bin/omp" ] && ok "missing bin/omp: recreated" || no "missing bin/omp: not recreated"
 
 echo
@@ -540,21 +721,37 @@ chk "release cache: newest here refreshed" \
 	"$(sed -n 's/^release=//p' "$CACHE")" "$V1"
 
 echo
-echo "== only another version on the device: install fails and names what it scanned"
+echo "== a local artifact provisions the omp it belongs to"
 TM=/tmp/vmismatch
 case "$TM" in /tmp/*) ;; *) echo "verify: refusing to touch $TM" >&2; exit 1 ;; esac
-rm -rf "$TM"; mkdir -p "$TM/.bun/install/cache/@oh-my-pi/pi-natives@$V1@@@1/native" "$TM/usr/bin" "$TM/tmp" "$TM/.config"
-pkg_json "$V1" >"$TM/.bun/install/cache/@oh-my-pi/pi-natives@$V1@@@1/package.json"
+rm -rf "$TM"; mkdir -p "$TM/usr/bin" "$TM/tmp" "$TM/.config"
+: >"$LOG"
 env -i HOME="$TM" TMPDIR="$TM/tmp" PREFIX="$TM/usr" XDG_CONFIG_HOME="$TM/.config" XDG_CACHE_HOME="$TM/.cache" \
 	TERMUX_VERSION=0.118 PATH="$FB/tools:$FB" \
 	bash "$R/bin/omp-termux" install "$R/out/pi_natives.android-arm64.node" >/tmp/vmismatch.log 2>&1
-chk "other version only: exits !=0" "$(nonzero $?)" "non0"
-grep -q "found: $V1" /tmp/vmismatch.log && ok "the error names the version it scanned" || { no "the error does not name the version"; tail -2 /tmp/vmismatch.log | sed 's|^|       |'; }
-chk "the failed install leaves no prefix" \
-	"$([ -e "$TM/.local/opt/omp-termux" ] && echo exists || echo gone)" "gone"
+chk "a local artifact: exits 0" "$?" "0"
+grep -q "install -g @oh-my-pi/pi-coding-agent@$V0" "$LOG" && ok "a local artifact: provisions the matching omp" ||
+	{ no "a local artifact: the omp was not provisioned"; tail -3 /tmp/vmismatch.log | sed 's|^|       |'; }
+chk "a local artifact: the addon lands beside that omp" \
+	"$(ls "$TM/.cache/.bun/install/cache/@oh-my-pi/pi-natives@$V0@@@1/native" 2>/dev/null | tr '\n' ' ')" "pi_natives.android-arm64.node "
 chk "no stray files on the device" \
 	"$(find "$TM" -type f -not -path '*/.config/*' -not -path '*/.bun/*' -not -path '*/.cache/*' -not -path '*/.local/*' 2>/dev/null | tr '\n' ' ')" ""
 chk "the self-update check leaves no scratch behind" "$(ls -A "$T/tmp" | wc -l)" "0"
+
+echo "== a failed install: the scratch root does not survive it"
+TF2=/tmp/vfailscratch
+case "$TF2" in /tmp/*) ;; *) echo "verify: refusing to touch $TF2" >&2; exit 1 ;; esac
+rm -rf "$TF2"; mkdir -p "$TF2/.config" "$TF2/tmp"
+env -i HOME="$TF2" TMPDIR="$TF2/tmp" PREFIX="$TF2/usr" XDG_CONFIG_HOME="$TF2/.config" XDG_CACHE_HOME="$TF2/.cache" \
+	TERMUX_VERSION=0.118 PATH="$FB/tools:$FB" OMP_TERMUX_RELEASE_BASE="file:///tmp/vmissing" \
+	bash "$R/bin/omp-termux" install latest >/tmp/vfailscratch.log 2>&1
+chk "failed install: exits !=0" "$(nonzero $?)" "non0"
+grep -q 'nothing was changed' /tmp/vfailscratch.log && ok "failed install: says nothing was changed" ||
+	{ no "failed install: silent about the state"; tail -2 /tmp/vfailscratch.log | sed 's|^|       |'; }
+chk "failed install: removes the scratch root" \
+	"$([ -e "$TF2/.cache/omp-termux" ] && echo present || echo gone)" "gone"
+chk "failed install: leaves no run.<pid> anywhere" \
+	"$(find "$TF2" -name 'run.[0-9]*' 2>/dev/null | wc -l)" "0"
 
 echo "== workstation → device: the build half drives the target over ssh (stubbed ssh/scp, fake device)"
 TS=/tmp/vssh; FS=/tmp/vsshbin
@@ -562,6 +759,8 @@ case "$TS$FS" in /tmp/*) ;; *) echo "verify: refusing to touch $TS$FS" >&2; exit
 rm -rf "$TS" "$FS"
 mkdir -p "$TS/.bun/install/global/node_modules/@oh-my-pi/pi-natives/native" "$TS/usr/bin" "$TS/tmp" "$TS/.config" "$FS"
 pkg_json "$V0" >"$TS/.bun/install/global/node_modules/@oh-my-pi/pi-natives/package.json"
+# The fake device resolves its tools here, so the host's /usr/bin/omp (if any) cannot leak into it.
+fake_tools "$FS/tools"
 # ssh runs the command line it is handed against the fake device's HOME; scp copies into it. Both log.
 cat >"$FS/ssh" <<'STUB'
 #!/bin/sh
@@ -569,7 +768,7 @@ printf 'ssh %s\n' "$*" >>/tmp/vssh.log
 while [ $# -gt 0 ]; do case "$1" in -p) shift 2 ;; -o) shift 2 ;; *) break ;; esac; done
 shift                                       # the host
 exec env HOME=/tmp/vssh TMPDIR=/tmp/vssh/tmp PREFIX=/tmp/vssh/usr XDG_CONFIG_HOME=/tmp/vssh/.config \
-	XDG_CACHE_HOME=/tmp/vssh/.cache TERMUX_VERSION=0.118 PATH="/tmp/vsshbin:$PATH" sh -c "$*"
+	XDG_CACHE_HOME=/tmp/vssh/.cache TERMUX_VERSION=0.118 PATH="/tmp/vsshbin/tools:/tmp/vsshbin" sh -c "$*"
 STUB
 cat >"$FS/scp" <<'STUB'
 #!/bin/sh
@@ -588,7 +787,35 @@ case "$rel" in /*) dir="$rel" ;; *) dir="/tmp/vssh/$rel" ;; esac
 mkdir -p "$dir"
 exec cp -f "$src" "$dir/"
 STUB
-printf '#!/bin/sh\nexit 0\n' >"$FS/bun"
+# A bun that behaves like the real one for both the addon load probe and a global install.
+cat >"$FS/bun" <<'STUB'
+#!/bin/sh
+case "$1" in
+	--version) echo 1.4.4; exit 0 ;;
+esac
+case "${2:-}" in
+	*/native/index.js)
+		d="${2%/native/index.js}"
+		if [ -f "$d/native/pi_natives.android-arm64.node" ]; then
+			echo "android-arm64|17|"; exit 0
+		fi
+		echo "android-arm64|0|countTokens"; exit 1
+		;;
+esac
+if [ "$1" = install ] && [ "$2" = -g ]; then
+	v="${3#@oh-my-pi/pi-coding-agent@}"
+	root="${BUN_INSTALL:-$HOME/.bun}"
+	p="$root/install/cache/@oh-my-pi/pi-natives@$v@@@1"
+	mkdir -p "$p/native"
+	echo "{\"name\":\"@oh-my-pi/pi-natives\",\"version\":\"$v\"}" >"$p/package.json"
+	g="$root/install/global/node_modules/@oh-my-pi"
+	mkdir -p "$g/pi-coding-agent" "$root/bin"
+	echo "{\"name\":\"@oh-my-pi/pi-coding-agent\",\"version\":\"$v\"}" >"$g/pi-coding-agent/package.json"
+	printf '#!/bin/sh\necho "omp $*"\n' >"$root/bin/omp"
+	chmod +x "$root/bin/omp"
+fi
+exit 0
+STUB
 chmod +x "$FS"/*
 : >/tmp/vssh.log
 env -i HOME="$TW" TMPDIR="$TW/tmp" XDG_CONFIG_HOME="$TW/.config" OMP_TERMUX_HOST=user@device OMP_TERMUX_PORT=8022 \
@@ -597,17 +824,19 @@ chk "device install exits 0" "$?" "0"
 chk "device install: no rebuild for a local artifact" "$(grep -c 'cross-compiling' /tmp/vssh-install.log)" "0"
 chk "device install: uploads the tool and the artifact" \
 	"$([ "$(grep -c '^scp -P 8022' /tmp/vssh.log)" -ge 2 ] && echo yes)" "yes"
-grep -q "^scp .*out/pi_natives\.android-arm64\.node user@device:~/.cache/omp-termux/$" /tmp/vssh.log &&
-	ok "device install: the artifact goes to ~/.cache/omp-termux (no XDG anywhere)" || no "device install: artifact not uploaded to the default scratch"
+grep -q "^scp .*out/pi_natives\.android-arm64\.node user@device:~/.cache/omp-termux/build/$" /tmp/vssh.log &&
+	ok "device install: the artifact goes to ~/.cache/omp-termux/build" || no "device install: artifact not uploaded to the build scratch"
+grep -q "^scp .*/bin/omp-termux user@device:~/.cache/omp-termux/build/$" /tmp/vssh.log &&
+	ok "device install: the tool goes to the same scratch" || no "device install: tool not uploaded there"
 chk "device install: the device ends up with the addon" \
 	"$(ls "$TS/.bun/install/global/node_modules/@oh-my-pi/pi-natives/native" | tr '\n' ' ')" "pi_natives.android-arm64.node "
 chk "device install: the device keeps the tool" "$([ -f "$TS/.local/opt/omp-termux/bin/omp-termux" ] && echo yes)" "yes"
 chk "device install: leaves no scratch behind" "$([ -d "$TS/.cache/omp-termux" ] && echo present || echo gone)" "gone"
-chk "device install: verifies on the device" "$(grep -c 'all good' /tmp/vssh-install.log)" "1"
+chk "device install: verifies on the device" "$(grep -c '^omp-termux: verify ok$' /tmp/vssh-install.log)" "1"
 env -i HOME="$TW" TMPDIR="$TW/tmp" XDG_CONFIG_HOME="$TW/.config" OMP_TERMUX_HOST=user@device OMP_TERMUX_PORT=8022 \
 	PATH="$FS:/usr/bin:/bin" bash "$R/dev/omp-termux-dev" status >/tmp/vssh-status.log 2>&1
 chk "device status exits 0" "$?" "0"
-grep -Eq "^tool +: /tmp/vssh/.cache/omp-termux/omp-termux" /tmp/vssh-status.log &&
+grep -Eq '^ +tool +~/\.cache/omp-termux/build/omp-termux$' /tmp/vssh-status.log &&
 	ok "device status: ran the uploaded copy on the device" || no "device status: did not reach the device"
 
 echo "== the build half's upload scratch: OMP_TERMUX_CACHE_HOME moves it"
@@ -617,9 +846,9 @@ env -i HOME="$TW" TMPDIR="$TW/tmp" XDG_CONFIG_HOME="$TW/.config" OMP_TERMUX_HOST
 	OMP_TERMUX_CACHE_HOME="$TS/scratch-abs" PATH="$FS:/usr/bin:/bin" \
 	bash "$R/dev/omp-termux-dev" status >/tmp/vssh-status2.log 2>&1
 chk "scratch override: exits 0" "$?" "0"
-grep -q "d=$TS/scratch-abs" /tmp/vssh.log && ok "scratch override: the absolute value is used as it stands" ||
+grep -q "d=$TS/scratch-abs/build" /tmp/vssh.log && ok "scratch override: the absolute value is used as it stands" ||
 	no "scratch override: did not ask for that directory"
-grep -q "^scp .*user@device:$TS/scratch-abs/$" /tmp/vssh.log && ok "scratch override: the tool is uploaded there" ||
+grep -q "^scp .*user@device:$TS/scratch-abs/build/$" /tmp/vssh.log && ok "scratch override: the tool is uploaded there" ||
 	no "scratch override: uploaded to the wrong directory"
 chk "scratch override: the default scratch stays untouched" "$([ -d "$TS/.cache/omp-termux" ] && echo present || echo gone)" "gone"
 chk "scratch override: removed afterwards" "$([ -d "$TS/scratch-abs" ] && echo present || echo gone)" "gone"
@@ -654,11 +883,10 @@ chk "XDG root: install uses the version it should" "$(grep -c "fetching pi-nativ
 chk "XDG root: the PATH hint names the root in use" "$(grep -c "$XDGR/bin is not in your PATH yet" /tmp/verify-xdg.log)" "1"
 chk "XDG root: and not the other root's bin" "$(grep -c "$LEGR/bin is not in your PATH yet" /tmp/verify-xdg.log)" "0"
 
-echo "== the resolved environment: the tool and its device probes agree, and a relative path is not one"
-# The build half has the device evaluate the tool's own root rule (REMOTE_ROOT_PROBE) before it can run
-# anything there; drift between the two is invisible until install acts on the wrong root, so every layout is
-# compared. A relative XDG value (which bun refuses outright) must fall through to an absolute path instead
-# of becoming one, and the tool's scratch must follow the XDG cache directory.
+echo "== the resolved environment: XDG and BUN_INSTALL decide the root and the scratch"
+# The dev half no longer probes the root rule over ssh; only the tool's own rule
+# is checked here. A relative XDG value (which bun refuses outright) must fall through to an absolute path
+# instead of becoming one, and the tool's scratch must follow the XDG cache directory.
 XR=/tmp/verify-roots
 case "$XR" in /tmp/*) ;; *) echo "verify: refusing to touch $XR" >&2; exit 1 ;; esac
 rm -rf "$XR"
@@ -669,13 +897,6 @@ for r in "$XR/.bun" "$XR/.cache/.bun" "$XR/bi" "$XR/elsewhere/.cache/.bun"; do
 	pkg_json "$V0" >"$r/install/global/node_modules/@oh-my-pi/pi-natives/package.json"
 done
 printf '%s' "$S0" >"$XR/adon.node"
-PROBE=$(sed -n "s/^REMOTE_ROOT_PROBE='\(.*\)'\$/\1/p" "$R/bin/omp-termux")
-[ -n "$PROBE" ] && ok "the tool still carries the root probe" || no "the root probe moved (the harness reads REMOTE_ROOT_PROBE)"
-probe_root() { # $1 = home, rest = env assignments
-	local home="$1"
-	shift
-	env -i HOME="$home" "$@" PATH="$PATH" sh -c "$PROBE; printf '%s' \"\$r\""
-}
 tool_root() { # $1 = home, rest = env assignments
 	local home="$1"
 	shift
@@ -689,44 +910,36 @@ tool_cache() { # $1 = home, rest = env assignments; the tool's own scratch answe
 tool_version() { # $1 = home, rest = env assignments; the pi-natives the root in use carries
 	local home="$1"
 	shift
-	env -i HOME="$home" "$@" PATH="$PATH" bash -c "source '$R/bin/omp-termux'; resolve_env; installed_version"
+	env -i HOME="$home" "$@" PATH="$PATH" bash -c "source '$R/bin/omp-termux'; resolve_env; installed_state" |
+		cut -d'|' -f1
 }
-roots_case() { # $1 = home, $2 = label, rest = env assignments for both sides
-	local home="$1" label="$2" p t
-	shift 2
-	p=$(probe_root "$home" "$@")
-	t=$(tool_root "$home" "$@")
-	chk "$label: the root probe agrees with the tool" "$p" "$t"
+roots_case() { # $1 = home, $2 = label, $3 = the root expected there; rest = env assignments
+	local home="$1" label="$2" want="$3" t
+	shift 3
+	t="$(tool_root "$home" "$@")"
+	chk "$label" "$t" "$want"
 	case "$t" in /*) ;; *) no "$label: the root in use is not absolute ($t)" ;; esac
 }
-roots_case "$XR" "no XDG at all (XDG-era root and legacy root both carry omp)"
-chk "no XDG at all: bun's own root wins over the XDG-era leftover" "$(tool_root "$XR")" "$XR/.bun"
+roots_case "$XR" "no XDG at all: bun's own root wins" "$XR/.bun"
 mkdir -p "$XR/home2/.cache/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent"
 printf '{"name":"@oh-my-pi/pi-coding-agent","version":"9.9.9"}' >"$XR/home2/.cache/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/package.json"
-roots_case "$XR/home2" "only the XDG-era root exists"
-chk "only the XDG-era root exists: it is the root in use" "$(tool_root "$XR/home2")" "$XR/home2/.cache/.bun"
-roots_case "$XR" "XDG_CACHE_HOME set" XDG_CACHE_HOME="$XR/.cache"
-roots_case "$XR" "XDG_CACHE_HOME exported empty" XDG_CACHE_HOME=
-roots_case "$XR" "BUN_INSTALL set" BUN_INSTALL="$XR/bi"
-chk "BUN_INSTALL: the root in use is that root" "$(tool_root "$XR" BUN_INSTALL="$XR/bi")" "$XR/bi"
+roots_case "$XR/home2" "only the XDG-era root exists: it is the root in use" "$XR/home2/.cache/.bun"
+roots_case "$XR" "XDG_CACHE_HOME set: its root is the root in use" "$XR/.cache/.bun" XDG_CACHE_HOME="$XR/.cache"
+roots_case "$XR" "XDG_CACHE_HOME exported empty: bun's own root wins" "$XR/.bun" XDG_CACHE_HOME=
+roots_case "$XR" "BUN_INSTALL set: the root in use is that root" "$XR/bi" BUN_INSTALL="$XR/bi"
 ln -sfn "$XR/bi" "$XR/bi-link"
 chk "symlinked BUN_INSTALL: the root is the link" "$(tool_root "$XR" BUN_INSTALL="$XR/bi-link")" "$XR/bi-link"
 chk "symlinked BUN_INSTALL: the package is still visible" "$(tool_version "$XR" BUN_INSTALL="$XR/bi-link")" "$V0"
 chk "XDG_CACHE_HOME: the scratch follows it" "$(tool_cache "$XR" XDG_CACHE_HOME="$XR/cache2")" "$XR/cache2/omp-termux"
 chk "OMP_TERMUX_CACHE_HOME wins over XDG" "$(tool_cache "$XR" OMP_TERMUX_CACHE_HOME="$XR/mine" XDG_CACHE_HOME="$XR/cache2")" "$XR/mine"
 chk "relative XDG_CACHE_HOME: falls through to bun's own root" "$( cd "$XR/elsewhere" && tool_root "$XR" XDG_CACHE_HOME=.cache )" "$XR/.bun"
-chk "relative XDG_CACHE_HOME: the root probe agrees" \
-	"$( cd "$XR/elsewhere" && probe_root "$XR" XDG_CACHE_HOME=.cache )" "$( cd "$XR/elsewhere" && tool_root "$XR" XDG_CACHE_HOME=.cache )"
 chk "relative XDG_CACHE_HOME: the scratch is absolute too" \
 	"$( cd "$XR/elsewhere" && tool_cache "$XR" XDG_CACHE_HOME=.cache )" "$XR/.cache/omp-termux"
 chk "relative OMP_TERMUX_CACHE_HOME: ignored" "$(tool_cache "$XR" OMP_TERMUX_CACHE_HOME=mine)" "$XR/.cache/omp-termux"
 chk "OMP_TERMUX_CACHE_HOME = HOME is ignored" "$(tool_cache "$XR" OMP_TERMUX_CACHE_HOME="$XR" 2>/dev/null)" "$XR/.cache/omp-termux"
 chk "OMP_TERMUX_CACHE_HOME = / is ignored" "$(tool_cache "$XR" OMP_TERMUX_CACHE_HOME=/ 2>/dev/null)" "$XR/.cache/omp-termux"
-env -i HOME="$XR" OMP_TERMUX_CACHE_HOME="$XR/.cache/omp-termux" PATH="$PATH" bash -c \
-	"source '$R/bin/omp-termux'; resolve_env; mkdir -p \"\$CACHE_HOME\"; printf keep >\"\$CACHE_HOME/keep\"; scratch_clear; [ -f \"\$CACHE_HOME/keep\" ]" &&
-	ok "the scratch cleaner keeps files it did not write" || no "the scratch cleaner removed a foreign file"
 ( cd "$XR/elsewhere" && env -i HOME="$XR" XDG_CACHE_HOME=.cache TMPDIR="$XR/tmp" PREFIX="$XR/usr" XDG_CONFIG_HOME="$XR/.config" \
-	TERMUX_VERSION=0.118 OMP_TERMUX_NO_UPDATE_CHECK=1 PATH="/usr/bin:/bin" bash "$R/bin/omp-termux" install "$XR/adon.node" ) >/tmp/verify-relroot.log 2>&1
+	TERMUX_VERSION=0.118 OMP_TERMUX_NO_UPDATE_CHECK=1 PATH="$FX:/usr/bin:/bin" bash "$R/bin/omp-termux" install "$XR/adon.node" ) >/tmp/verify-relroot.log 2>&1
 chk "relative XDG_CACHE_HOME: install exits 0" "$?" "0"
 [ -f "$XR/.bun/install/global/node_modules/@oh-my-pi/pi-natives/native/pi_natives.android-arm64.node" ] &&
 	[ -f "$XR/.cache/.bun/install/global/node_modules/@oh-my-pi/pi-natives/native/pi_natives.android-arm64.node" ] &&
@@ -810,21 +1023,28 @@ else
 fi
 if [ "$skipped" = 0 ]; then
 grep -q "installing bun" /tmp/verify-fresh.log && ok "fresh device: installed bun itself" || no "fresh device: no bun"
-grep -q "installing omp $V2 on this device (currently none)" /tmp/verify-fresh.log && ok "fresh device: installed omp itself (this repository's newest release)" || no "fresh device: no omp"
+grep -q "installing omp $V2 (currently none)" /tmp/verify-fresh.log && ok "fresh device: installed omp itself (this repository's newest release)" || no "fresh device: no omp"
 grep -q "install -g @oh-my-pi/pi-coding-agent@$V2" "$TF/bun.log" && ok "fresh device: calls the right version" || no "fresh device: wrong bun call"
 [ -f "$TF/.bun/install/cache/@oh-my-pi/pi-natives@$V2@@@1/native/pi_natives.android-arm64.node" ] &&
 	ok "fresh device: addon lands in the new omp" || no "fresh device: addon missing"
 [ -f "$TF/.local/opt/omp-termux/bin/omp-termux" ] && ok "fresh device: tool stays on the device" || no "fresh device: tool not left behind"
 fi
 
+chk "install places files atomically (no .part left behind)" \
+	"$(find "$T" "$TS" "$TX" "$XR" "$TF" "$TM" -name '*.part.*' 2>/dev/null | wc -l)" "0"
+
 if [ "$fails" -eq 0 ]; then
-	rm -rf "$T" "$FB" "$RAW" "$R19" "$R20" "$LOG" "$TW" "$FSW" "$TX" "$FX" "$RX" "$XR" "$TF" "$FF" "$RF" "$FW" "$TM" "$TS" "$FS" \
-		/tmp/verify-xdg.log /tmp/verify-bi.log /tmp/verify-fresh.log /tmp/verify-relroot.log /tmp/vmismatch.log \
+	rm -rf "$T" "$FB" "$RAW" "$R19" "$R20" "$LOG" "$TW" "$FSW" "$TX" "$FX" "$RX" "$XR" "$TF" "$FF" "$RF" "$FW" "$TM" "$TS" "$FS" "$TF2" \
+		/tmp/verify-xdg.log /tmp/verify-bi.log /tmp/verify-fresh.log /tmp/verify-relroot.log /tmp/vmismatch.log /tmp/vfailscratch.log \
 		/tmp/v1.log /tmp/v2.log /tmp/v3.log /tmp/v4.log /tmp/v5.log /tmp/v6.log /tmp/v7.log \
 		/tmp/vload.log /tmp/vup.log /tmp/vwrong.log /tmp/vahead.log /tmp/vnoarg.log /tmp/vstep.log \
 		/tmp/vstale.log /tmp/vstale2.log /tmp/vforce.log /tmp/vcache.log /tmp/vttl.log /tmp/vroots.log \
 		/tmp/vws.log /tmp/vwsd.log /tmp/vpath.log /tmp/vkeep.log /tmp/vssh.log /tmp/vssh-install.log \
-		/tmp/vssh-status.log /tmp/vssh-status2.log /tmp/v-curl.log /tmp/vcurl-plain.log /tmp/v-bun.log /tmp/vnobin.log
+		/tmp/vssh-status.log /tmp/vssh-status2.log /tmp/v-curl.log /tmp/vcurl-plain.log /tmp/v-bun.log /tmp/vnobin.log \
+		/tmp/vstatus-out.log /tmp/vstatus-err.log /tmp/vverify-out.log /tmp/vverify-err.log \
+		/tmp/vverbose.log /tmp/vverifyfail.log /tmp/vleftover.log /tmp/vompfail.log \
+		/tmp/v404.log /tmp/v403.log /tmp/v5xx.log \
+		/tmp/vpar1.log /tmp/vpar2.log /tmp/vreap.log /tmp/vbunfloor.log /tmp/vbunfloor2.log /tmp/vreleasecache.log
 else
 	echo "  (failed: scene kept under /tmp/verify-*)"
 fi

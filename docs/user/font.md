@@ -14,6 +14,16 @@ unzip -o "$TMPDIR/maple.zip" -d "$TMPDIR/maple"
 cp "$TMPDIR/maple/MapleMono-NF-Regular.ttf" ~/.termux/font.ttf
 ```
 
+For Chinese text use the `-CN` variant (152 MB): the regular font carries no CJK glyphs, and Chinese characters
+fall back to a heavier face.
+
+```sh
+curl -fL -o "$TMPDIR/maple.zip" \
+  https://github.com/subframe7536/maple-font/releases/latest/download/MapleMono-NF-CN-unhinted.zip
+unzip -o "$TMPDIR/maple.zip" -d "$TMPDIR/maple"
+cp "$TMPDIR/maple/MapleMono-NF-CN-Regular.ttf" ~/.termux/font.ttf
+```
+
 Restart the Termux app afterwards. Any Nerd Font works the same way.
 
 ## Verify
