@@ -2,33 +2,44 @@
 
 [English](README.md) | [中文](README.zh-CN.md)
 
-`omp` needs a native addon (`@oh-my-pi/pi-natives`) that upstream does not build for Android, so on Termux it exits
-with `Unsupported platform: android-arm64`. This repository supplies that addon and a small `omp-termux` command that
-keeps omp and the addon on the same version.
+`omp` depends on a native addon, `@oh-my-pi/pi-natives`, that upstream does not build for Android, so on Termux it
+exits with `Unsupported platform: android-arm64`. This repository builds that addon for Termux and ships a small
+`omp-termux` command that keeps omp and the addon on the same version.
+
+## Requirements
+
+- Android 7.0 or newer (API 24), aarch64
+- `bash` and `curl`
 
 ## Install
-
-On Termux:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/hmeqo/omp-termux/main/install.sh | sh
 ```
 
-Needs Android 7+ (API 24), aarch64, `bash` and `curl`. The script installs bun when missing, sets omp to the newest
-version built here, copies the matching addon into the `native/` directory of the pi-natives package, and links
-`omp-termux` into `PATH`. Arguments go to `install`: `... | sh -s -- 18.3.4` installs that version.
+The script:
 
-Start `omp`, or restart it if it was already running: a successful start means the addon is in place.
+1. installs bun if it is missing;
+2. updates omp to the newest version built here;
+3. copies the matching addon into the `native/` directory of the pi-natives package;
+4. links `omp-termux` into `PATH`.
 
-A newer `omp-termux` on `main` is reported on stderr on every run until you update it. `OMP_TERMUX_NO_UPDATE_CHECK=1`
-silences that check and `OMP_TERMUX_UPDATE_TTL` (seconds, default 86400) sets how often it looks. The update check
-asks GitHub for `main`; no telemetry or identifiers are sent.
+Arguments are passed through to `install`, so `... | sh -s -- 18.3.4` installs version 18.3.4.
+
+If `omp` or `omp-termux` is still not found afterwards, the script offers to add them to your shell's startup file;
+accept and open a new terminal.
+
+Start `omp` to check the install; restart it if it was already running.
+
+A newer `omp-termux` on `main` is reported on stderr on every run of `omp-termux` until you update it. Set
+`OMP_TERMUX_NO_UPDATE_CHECK=1` to skip the check, or `OMP_TERMUX_UPDATE_TTL` (seconds, default 86400) to change how
+often it queries. The check only requests `main` from GitHub; no telemetry or identifiers are sent.
 
 ## Commands
 
 | command | what it does |
 |---|---|
-| `omp-termux install [version\|file]` | bring this device to that version and install the addon (`latest` = the newest build here, default = the version it runs); no-op when already current |
+| `omp-termux install [version\|file]` | install that version with its addon (`latest` = the newest build here, omitted = the version already installed); does nothing when it is current |
 | `omp-termux status` | show the tool, omp, the addon copies and the newest build here |
 | `omp-termux verify` | check that the addon loads and omp starts |
 | `omp-termux update-self` | replace the installed `omp-termux` with the newest from this repository |
@@ -46,7 +57,7 @@ asks GitHub for `main`; no telemetry or identifiers are sent.
 
 ## Limitations
 
-* No desktop automation and no native clipboard on Android; clipboard falls back to `termux-clipboard-set`.
+* No desktop automation and no native clipboard on Android; the clipboard falls back to `termux-clipboard-set`.
 * No audio, speech-to-text or text-to-speech on Android.
 * Only arm64-v8a is supported; there is no build for armv7 or x86.
 
