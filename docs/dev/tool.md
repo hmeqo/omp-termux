@@ -110,8 +110,12 @@ another release need not carry an addon for this platform. `run_verify` then run
 `PATH`, else bun's roots), warns when it is not `$BUN_HOME/bin/omp`, and fails when it does not start. A failed copy
 is reported with its directory; an install failure suggests `omp-termux verify`.
 
-`doctor` writes `termux`, `uname`, `tool`, `bun`, `omp`, `addon` and `free` rows to stdout, and warns when bun is
-missing.
+`install` and `update-self` print the PATH advice after their result line. The prompt that offers to write the
+shell's rc file runs only when `OMP_TERMUX_ASK_PATH` is set and only on a terminal; without one, the commands are
+printed and nothing is written. `path_rc` names the file from `$SHELL`, `$XDG_CONFIG_HOME` and `$HOME`.
+
+`doctor` writes `termux`, `uname`, `tool`, `bun`, `omp`, `addon` and `free` rows to stdout, a `path` row naming every
+directory not on `PATH` (or `path ok`), and warns when bun is missing.
 
 ## Self-update and release lookups
 
@@ -135,6 +139,7 @@ shared by a phone behind carrier NAT.
 
 `OMP_TERMUX_REPO`, `OMP_TERMUX_RELEASE_BASE`, `OMP_TERMUX_RAW_BASE`, `OMP_TERMUX_VERSION`,
 `OMP_TERMUX_NO_UPDATE_CHECK`, `OMP_TERMUX_UPDATE_TTL` and `OMP_TERMUX_VERBOSE` for the tool; `OMP_TERMUX_CACHE_HOME`
-sets the tool's scratch root and the build script's upload directory; `OMP_TERMUX_NDK`, `OMP_TERMUX_MODE`,
+sets the tool's scratch root and the build script's upload directory; `OMP_TERMUX_ASK_PATH` lets `install.sh` offer
+the rc write; `OMP_TERMUX_NDK`, `OMP_TERMUX_MODE`,
 `OMP_TERMUX_HOST` and `OMP_TERMUX_PORT` for the build script. Defaults cover a fresh device, so no export is
 required.

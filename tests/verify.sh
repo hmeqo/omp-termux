@@ -18,9 +18,10 @@ ok() { printf '  ok   %s\n' "$1"; }
 no() { printf '  FAIL %s\n' "$1"; fails=$((fails + 1)); }
 chk() { if [ "$2" = "$3" ]; then ok "$1"; else no "$1 (got [$2] want [$3])"; fi; }
 nonzero() { [ "$1" -ne 0 ] && echo non0 || echo zero; }
-# Progress and warnings live on stderr (`==> ...`, `warning: ...`, and the optional `  hint: ...`); results and
-# tables live on stdout. Blank lines are allowed because the PATH hint separates its advice that way.
-stderr_clean() { ! grep -qvE '^(|==> |warning:|  hint: )' "$1"; }
+# Progress and warnings live on stderr (`==> ...`, `warning: ...`, the optional `  hint: ...`, and the PATH advice's
+# `PATH: ...` plus its indented command); results and tables live on stdout. Blank lines are allowed because the
+# PATH advice separates itself that way.
+stderr_clean() { ! grep -qvE '^$|^(==> |warning:|  hint: |PATH: |  (export|fish_add_path) )' "$1"; }
 stdout_clean() { ! grep -qE '^(==> |warning:)' "$1"; }
 
 echo "== static gates"
@@ -328,6 +329,12 @@ grep -Eq "^tool +omp-termux v[0-9.]+ \([0-9a-f]{12}\)$" /tmp/vstatus-out.log &&
 grep -Eq "^omp +$V0$" /tmp/vstatus-out.log && ok "status: the omp row is on stdout" || no "status: no omp row"
 grep -Eq "^addon +$V0 +[^ ]+ +loaded$" /tmp/vstatus-out.log &&
 	ok "status: the loaded addon row is on stdout" || no "status: no loaded addon row"
+dev "file://$R19" doctor >/tmp/vdoctor.log 2>&1
+chk "doctor exits 0" "$?" "0"
+grep -Eq "^path +$T/.bun/bin not on PATH$" /tmp/vdoctor.log && ok "doctor names bun's bin" ||
+	{ no "doctor does not name bun's bin"; tail -3 /tmp/vdoctor.log | sed 's|^|       |'; }
+grep -Eq "^path +$T/usr/bin not on PATH$" /tmp/vdoctor.log && ok "doctor names the link dir" || no "doctor does not name the link dir"
+chk "doctor: no ok row while something is missing" "$(grep -Ec '^path +ok$' /tmp/vdoctor.log)" "0"
 grep -Eq '^paths +bun +~/\.bun$' /tmp/vstatus-out.log && ok "status: paths collapse \$HOME to ~" ||
 	no "status: paths are not collapsed"
 grep -Eq '^ +omp +~/\.bun/bin/omp$' /tmp/vstatus-out.log && ok "status: names the omp it found" ||
@@ -406,10 +413,78 @@ dev "file://$R19" install >/tmp/v2.log 2>&1; chk "install (no argument) exits 0"
 chk "install (no argument) leaves omp alone" "$(grep -c 'install -g' "$LOG" 2>/dev/null || true)" "0"
 grep -q 'nothing to do' /tmp/v2.log && ok "install (no argument): already at the published version" ||
 	{ no "install (no argument) does not say nothing to do"; tail -3 /tmp/v2.log | sed 's|^|       |'; }
-chk "install (no argument): nothing to do comes last" "$(tail -n1 /tmp/v2.log | grep -c 'nothing to do')" "1"
 chk "install (no argument): does not re-link an existing link" "$(grep -c 'linked ' /tmp/v2.log)" "0"
-chk "install (no argument): hints the tool's link dir" "$(grep -c "$T/usr/bin is not in your PATH yet" /tmp/v2.log)" "1"
-chk "install (no argument): hints bun's bin dir" "$(grep -c "$T/.bun/bin is not in your PATH yet" /tmp/v2.log)" "1"
+chk "install (no argument): hints the tool's link dir" "$(grep -c "PATH: $T/usr/bin is not on your PATH" /tmp/v2.log)" "1"
+chk "install (no argument): hints bun's bin dir" "$(grep -c "PATH: $T/.bun/bin is not on your PATH" /tmp/v2.log)" "1"
+awk '/^omp-termux: nothing to do/{r=NR} /^PATH:/{if(!h)h=NR} END{exit !(r && h && h>r)}' /tmp/v2.log &&
+	ok "install (no argument): the PATH advice comes after the result" || no "install (no argument): advice precedes the result"
+dev "file://$R19" install >/tmp/v2-out.log 2>/tmp/v2-err.log
+chk "install (no argument): the result is on stdout" "$(grep -c '^omp-termux: nothing to do' /tmp/v2-out.log)" "1"
+stderr_clean /tmp/v2-err.log && ok "install: stderr only carries documented shapes" ||
+	{ no "install: an unexpected line is on stderr"; sed 's|^|       |' /tmp/v2-err.log; }
+stdout_clean /tmp/v2-out.log && ok "install: the advice stays off stdout" || no "install: advice leaked to stdout"
+
+# The ask needs a terminal of its own; with none, nothing is written and the commands are still printed.
+env -i HOME="$T" TMPDIR="$T/tmp" PREFIX="$T/usr" XDG_CONFIG_HOME="$T/.config" XDG_CACHE_HOME="$T/.cache" \
+	TERMUX_VERSION=0.118 PATH="$FB/tools:$FB" SHELL=/bin/bash OMP_TERMUX_ASK_PATH=1 \
+	OMP_TERMUX_RAW_BASE="file://$RAW" OMP_TERMUX_RELEASE_BASE="file://$R19" "$TOOL" install >/tmp/vask.log 2>&1
+chk "ask without a tty: exits 0" "$?" "0"
+chk "ask without a tty: writes no rc file" "$([ -e "$T/.bashrc" ] && echo present || echo gone)" "gone"
+grep -q 'is not on your PATH' /tmp/vask.log && ok "ask without a tty: still prints the command" ||
+	no "ask without a tty: silent"
+chk "ask without a tty: never prompts" "$(grep -c 'Add to .*\[Y/n\]' /tmp/vask.log)" "0"
+
+# Every prompt path runs end to end under a real terminal: install.sh, the tty gate, fd 3 and the rc write.
+if command -v script >/dev/null 2>&1; then
+	pty() { # $1 = HOME, $2 = the answer ("" = Enter, "none" = no input), $3 = log, $4 = command
+		local cmd
+		mkdir -p "$1/tmp"
+		cmd="env -i HOME=$1 BUN_INSTALL=$T/.bun TMPDIR=$1/tmp PREFIX=$T/usr TERMUX_VERSION=0.118 \
+			PATH=$FB/tools:$FB SHELL=/bin/bash OMP_TERMUX_RAW_BASE=file://$RAW \
+			OMP_TERMUX_RELEASE_BASE=file://$R19 $4"
+		if [ "$2" = none ]; then
+			script -qec "$cmd" /dev/null </dev/null >"$3" 2>&1
+		else
+			printf '%s\n' "$2" | script -qec "$cmd" /dev/null >"$3" 2>&1
+		fi
+	}
+	pty "$T/pty" y /tmp/vpty.log "sh $R/install.sh"
+	chk "bootstrap under a pty: exits 0" "$?" "0"
+	grep -q 'Add to .*\.bashrc? \[Y/n\]' /tmp/vpty.log && ok "bootstrap under a pty: asks" ||
+		{ no "bootstrap under a pty: does not ask"; sed 's|^|       |' /tmp/vpty.log; }
+	chk "bootstrap under a pty: one block" "$(grep -c '# omp-termux: PATH' "$T/pty/.bashrc" 2>/dev/null || true)" "1"
+	chk "bootstrap under a pty: the block names bun's bin" \
+		"$(grep -c "^export PATH=\"$T/.bun/bin:\\\$PATH\"$" "$T/pty/.bashrc" 2>/dev/null || true)" "1"
+	chk "bootstrap under a pty: the block names the link dir" \
+		"$(grep -c "^export PATH=\"$T/usr/bin:\\\$PATH\"$" "$T/pty/.bashrc" 2>/dev/null || true)" "1"
+
+	pty "$T/pty-enter" "" /tmp/vpty-enter.log "sh $R/install.sh"
+	chk "pty prompt: Enter takes the default" "$(grep -c '# omp-termux: PATH' "$T/pty-enter/.bashrc" 2>/dev/null || true)" "1"
+
+	mkdir -p "$T/pty-ro"
+	: >"$T/pty-ro/.bashrc"
+	chmod 444 "$T/pty-ro/.bashrc"
+	pty "$T/pty-ro" y /tmp/vpty-ro.log "sh $R/install.sh"
+	chk "pty prompt: an unwritable rc does not fail the run" "$?" "0"
+	grep -q 'cannot write' /tmp/vpty-ro.log && ok "pty prompt: warns about the unwritable rc" ||
+		no "pty prompt: silent about the unwritable rc"
+	chk "pty prompt: leaves the rc alone" "$(grep -c '# omp-termux: PATH' "$T/pty-ro/.bashrc")" "0"
+	chmod 644 "$T/pty-ro/.bashrc"
+
+	pty "$T/pty" none /tmp/vpty-again.log "sh $R/install.sh"
+	chk "pty again: exits 0" "$?" "0"
+	chk "pty again: no second prompt" "$(grep -c 'Add to ' /tmp/vpty-again.log)" "0"
+	grep -q 'already has the omp-termux PATH block' /tmp/vpty-again.log &&
+		ok "pty again: says the block is already there" || no "pty again: silent about the existing block"
+	chk "pty again: one block" "$(grep -c '# omp-termux: PATH' "$T/pty/.bashrc")" "1"
+
+	pty "$T/pty" none /tmp/vpty-direct.log "bash $R/bin/omp-termux install"
+	chk "direct install under a pty: exits 0" "$?" "0"
+	chk "direct install under a pty: never asks" "$(grep -c 'Add to ' /tmp/vpty-direct.log)" "0"
+else
+	echo "  (skip: \`script\` not installed, every tty prompt path is untested)"
+	skips=$((skips + 1))
+fi
 
 # A kept scope entry does not change what the device loads today, but it would shadow the CLI's pins on the
 # next hand upgrade; the verb drops it even when it has nothing else to do.
@@ -432,15 +507,20 @@ grep -q "^omp-termux: omp $V1 ready ([0-9][0-9]* addon copies)$" /tmp/v3.log &&
 	ok "install latest: reports the result on stdout" || { no "install latest: no result line"; tail -3 /tmp/v3.log | sed 's|^|       |'; }
 chk "calls bun to upgrade" "$(grep -o "install -g @oh-my-pi/pi-coding-agent@$V1" "$LOG" | head -1)" "install -g @oh-my-pi/pi-coding-agent@$V1"
 chk "addon in place in the new package" "$(ls "$T/.bun/install/cache/@oh-my-pi/pi-natives@$V1@@@1/native" 2>/dev/null | tr '\n' ' ')" "pi_natives.android-arm64.node "
-chk "hints bun's bin dir once it holds omp" "$(grep -c "$T/.bun/bin is not in your PATH yet" /tmp/v3.log)" "1"
-chk "hints the tool's link dir too" "$(grep -c "$T/usr/bin is not in your PATH yet" /tmp/v3.log)" "1"
+chk "hints bun's bin dir once it holds omp" "$(grep -c "PATH: $T/.bun/bin is not on your PATH" /tmp/v3.log)" "1"
+chk "hints the tool's link dir too" "$(grep -c "PATH: $T/usr/bin is not on your PATH" /tmp/v3.log)" "1"
 
 # Both directories on PATH: the reminder has nothing to say.
 env -i HOME="$T" TMPDIR="$T/tmp" PREFIX="$T/usr" XDG_CONFIG_HOME="$T/.config" XDG_CACHE_HOME="$T/.cache" \
 	TERMUX_VERSION=0.118 PATH="$T/.bun/bin:$T/usr/bin:$FB:/usr/bin:/bin" \
 	OMP_TERMUX_RAW_BASE="file://$RAW" OMP_TERMUX_RELEASE_BASE="file://$R20" \
 	"$TOOL" install >/tmp/vpath.log 2>&1
-chk "both on PATH: no hint at all" "$(grep -c 'is not in your PATH yet' /tmp/vpath.log 2>/dev/null || true)" "0"
+chk "both on PATH: no hint at all" "$(grep -c 'is not on your PATH' /tmp/vpath.log 2>/dev/null || true)" "0"
+env -i HOME="$T" TMPDIR="$T/tmp" PREFIX="$T/usr" XDG_CONFIG_HOME="$T/.config" XDG_CACHE_HOME="$T/.cache" \
+	TERMUX_VERSION=0.118 PATH="$T/.bun/bin:$T/usr/bin:$FB:/usr/bin:/bin" \
+	OMP_TERMUX_RAW_BASE="file://$RAW" OMP_TERMUX_RELEASE_BASE="file://$R20" \
+	"$TOOL" doctor >/tmp/vdoctor-ok.log 2>&1
+chk "doctor: path ok when both are reachable" "$(grep -Ec '^path +ok$' /tmp/vdoctor-ok.log)" "1"
 
 # Already at the published version: the release is never fetched, so nothing is downloaded.
 : >"$LOG"; : >"$CURL_LOG"
@@ -880,8 +960,8 @@ env -i HOME="$TX" XDG_CACHE_HOME="$TX/.cache" TMPDIR="$TX/tmp" PREFIX="$TX/usr" 
 chk "XDG root: install uses the version it should" "$(grep -c "fetching pi-natives $V2" /tmp/verify-xdg.log)" "1"
 [ -f "$XPKG/native/pi_natives.android-arm64.node" ] && ok "XDG root: addon lands in the package in use" || no "XDG root: addon missing from the package in use"
 [ -d "$LEGR/install/cache/@oh-my-pi/pi-natives@$V0@@@1" ] && no "XDG root: old-root copy not reclaimed" || ok "XDG root: old-root copy reclaimed by the rules"
-chk "XDG root: the PATH hint names the root in use" "$(grep -c "$XDGR/bin is not in your PATH yet" /tmp/verify-xdg.log)" "1"
-chk "XDG root: and not the other root's bin" "$(grep -c "$LEGR/bin is not in your PATH yet" /tmp/verify-xdg.log)" "0"
+chk "XDG root: the PATH hint names the root in use" "$(grep -c "PATH: $XDGR/bin is not on your PATH" /tmp/verify-xdg.log)" "1"
+chk "XDG root: and not the other root's bin" "$(grep -c "PATH: $LEGR/bin is not on your PATH" /tmp/verify-xdg.log)" "0"
 
 echo "== the resolved environment: XDG and BUN_INSTALL decide the root and the scratch"
 # The dev half no longer probes the root rule over ssh; only the tool's own rule
@@ -1043,6 +1123,9 @@ if [ "$fails" -eq 0 ]; then
 		/tmp/vssh-status.log /tmp/vssh-status2.log /tmp/v-curl.log /tmp/vcurl-plain.log /tmp/v-bun.log /tmp/vnobin.log \
 		/tmp/vstatus-out.log /tmp/vstatus-err.log /tmp/vverify-out.log /tmp/vverify-err.log \
 		/tmp/vverbose.log /tmp/vverifyfail.log /tmp/vleftover.log /tmp/vompfail.log \
+		/tmp/vask.log /tmp/vpty.log /tmp/vpty-enter.log /tmp/vpty-ro.log /tmp/vpty-again.log \
+		/tmp/vpty-direct.log /tmp/v2-out.log /tmp/v2-err.log \
+		/tmp/vrc.log /tmp/vdoctor.log /tmp/vdoctor-ok.log \
 		/tmp/v404.log /tmp/v403.log /tmp/v5xx.log \
 		/tmp/vpar1.log /tmp/vpar2.log /tmp/vreap.log /tmp/vbunfloor.log /tmp/vbunfloor2.log /tmp/vreleasecache.log
 else

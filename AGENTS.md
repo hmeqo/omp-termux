@@ -22,21 +22,24 @@ a target device over ssh. Both are single bash files organized in sections intro
 | scratch, fs, http | `scratch_open`, `scratch_reap`; `stage_into`, `http`, `reject_option`, `require_file_arg`, `json_version`, `file_sha`, `tmp_dir`, `version_min/max/ge/gt/lt`, `same_path` |
 | installed, release | `search_roots`, `natives_dirs`, `newest_natives_dir`, `installed_state`, `is_workspace_load`, `artifact_version`, `latest_release_version`, `latest_version`, `fetch_release` |
 | bun, omp tree | `download_bun`, `device_ensure_bun`, `upgrade_bun`, `cli_bun_floor`, `ensure_bun_for_omp`, `stray_scope_deps`, `drop_stray_scope_deps`, `install_addon`, `link_global_tree`, `has_other_link_ref`, `prune_superseded`, `ensure_omp` |
-| verify, self | `check_addons`, `run_verify`, `path_hint`, `path_reminder`, `link_self`, `tool_label`, `cmd_install_self`, `cmd_uninstall_self`, `cache_get`, `cache_put`, `record_release`, `refresh_release_cache`, `update_checks_on`, `check_self_update`, `cmd_update_self` |
+| verify, self | `check_addons`, `run_verify`, `path_missing`, `path_dirs`, `path_hint`, `path_reminder`, `path_line`, `path_rc`, `path_tty`, `path_rc_add`, `path_flush`, `link_self`, `tool_label`, `cmd_install_self`, `cmd_uninstall_self`, `cache_get`, `cache_put`, `record_release`, `refresh_release_cache`, `update_checks_on`, `check_self_update`, `cmd_update_self` |
 | verbs, dispatch | `resolve_target`, `device_is_current`, `cmd_install`, `show_path`, `cmd_status`, `cmd_doctor`, `main` |
 
 - Single writer: `resolve_env` is the only reader of `HOME`/`XDG_*`/`BUN_INSTALL`/`PATH` and the only writer of
   `BIN_HOME`, `CACHE_HOME`, `TMP_HOME`, `BUN_DEFAULT`, `BUN_ROOTS`, `BUN_HOME`, `BUN_BIN`, `OMP_BIN`;
   `scratch_open` owns `SCRATCH`. One exception: `download_bun` sets `BUN_BIN` for the root it just provisioned.
-  Everything else takes arguments or reads those variables and prints results instead of setting caller state. Call
-  `resolve_env` again after a step that changes bun's tree.
+  The PATH advice is the one other transient exception: `path_hint` appends to `PATH_HINTS`, and `path_line`/
+  `path_rc` read `$SHELL`, `$XDG_CONFIG_HOME` and `$HOME`. Everything else takes arguments or reads those
+  variables and prints results instead of setting caller state. Call `resolve_env` again after a step that changes
+  bun's tree.
 - Scratch: one `$CACHE_HOME/run.<pid>` per `install`/`verify` run, opened by `scratch_open` and removed by an `EXIT`
   trap (`scratch_reap`, which also removes `$CACHE_HOME` when empty). Opening reclaims dirs whose pid is gone
   (`kill -0`) and leaves live runs alone. No other verb opens one; downloads live only inside it.
 - Output: results on **stdout** (`result` → `omp-termux: …`); progress and diagnostics on **stderr** (`msg` → `==> …`,
-  `warn` → `warning: …`, `die`/`err`/`print_error` → `omp-termux: error: …`, plus `hint: …` when passed). Color
-  only on a tty; `OMP_TERMUX_VERBOSE=1` uncaps leftover rows with their export counts, adds the install-time load
-  mode, and prints absolute paths in `status`.
+  `warn` → `warning: …`, `die`/`err`/`print_error` → `omp-termux: error: …`, plus `hint: …` when passed). The PATH
+  advice has its own lines, `PATH: <dir> is not on your PATH` and the command indented two spaces, printed after the
+  result line. Color only on a tty; `OMP_TERMUX_VERBOSE=1` uncaps leftover rows with their export
+  counts, adds the install-time load mode, and prints absolute paths in `status`.
 - One implementation per mechanism: `http URL OUT MAX` is the only `curl` call site (prints
   `<status> <effective URL>`; `000`/empty = network failure; `MAX` 1800 for the addon and bun zip, 20 for lookups
   and self-update). `stage_into` is the only copy-and-rename for an installed addon (`DST.part.$$`, then `mv`); the
@@ -125,7 +128,8 @@ sh tests/verify.sh                          # the local gate: syntax + shellchec
   rows unless verbose (a failing leftover always prints); `FULL=0` (install) is silent on success and dies on the
   loaded copy. `run_verify` adds `omp … starts` and ends with `result "verify ok"`.
 - `cmd_status` prints `tool`, `omp`, one `addon` row per `natives_dirs` entry (size, `loaded`/`leftover`), `newest`
-  when cached, and `paths`; `$HOME` collapses to `~`. The build script parses the `omp` row: keep the format.
+  when cached, and `paths`; `$HOME` collapses to `~`. `cmd_doctor` adds a `path` row per unreachable directory, or
+  `path ok`. The build script parses the `omp` row: keep the format.
 - `fetch_release` downloads into scratch, classifies HTTP (404/4xx/5xx/000 change nothing), and rejects an addon
   whose stamp is not the requested version. `install_addon` takes the target from that stamp. `prune_superseded`
   keeps copies a link still reaches, and its `find` omits `-L`.
@@ -174,7 +178,8 @@ URL literal; a new endpoint means updating both the list and the gate.
 - Environment matrix: no XDG, XDG set and exported empty, `BUN_INSTALL`, relative `XDG_CACHE_HOME`/`CACHE_HOME`;
   bun's root wins over the XDG-era leftover, and a decoy tree in the current directory is never written.
 - Invariants: two concurrent `verify` runs succeed and leave nothing; a `run.<pid>` whose pid is gone is reclaimed,
-  a live one kept; a failed install leaves the root absent; `stage_into` leaves no `.part`; egress holds. Device
+  a live one kept; a failed install leaves the root absent; `stage_into` leaves no `.part`; egress holds; the PATH
+  advice follows the result, the rc writer appends one block, and the ask never writes or prompts without a tty. Device
   sections need `out/pi_natives.android-arm64.node` and skip without it; one fixture records its version the
   pre-stamp way, so both `artifact_version` identities are exercised.
 - CI has **no verification job**: it only builds and publishes, with `verify_artifact` inline as the last automated

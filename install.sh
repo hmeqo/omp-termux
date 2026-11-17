@@ -25,4 +25,5 @@ if [ "$#" -eq 0 ]; then
 	set -- "${OMP_TERMUX_VERSION:-latest}"
 fi
 
-bash "$work/bin/omp-termux" install "$@"
+# Only the bootstrap offers to persist; a direct install just prints the lines.
+OMP_TERMUX_ASK_PATH=1 bash "$work/bin/omp-termux" install "$@"

@@ -104,7 +104,12 @@ omp    18.18.3  starts         ok
 之后 `run_verify` 运行用户已有的 `omp`(取自 `PATH`,否则 bun 的根),当它不是 `$BUN_HOME/bin/omp` 时告警,
 启动失败则判为失败。加载失败的副本会连同所在目录一起报告;安装失败时会提示执行 `omp-termux verify`。
 
-`doctor` 把 `termux`、`uname`、`tool`、`bun`、`omp`、`addon` 和 `free` 行写到 stdout,缺少 bun 时告警。
+`install` 与 `update-self` 把 PATH 建议放在结果行之后。
+写 rc 文件的询问只在设置了 `OMP_TERMUX_ASK_PATH` 时出现,且必须有终端;没有终端时只打印命令,不写任何文件。
+`path_rc` 从 `$SHELL`、`$XDG_CONFIG_HOME` 与 `$HOME` 得出该文件。
+
+`doctor` 把 `termux`、`uname`、`tool`、`bun`、`omp`、`addon` 和 `free` 行写到 stdout,
+每个不在 `PATH` 上的目录写一行 `path`,都能访问时写 `path ok`,缺少 bun 时告警。
 
 ## 自更新与 release 查询
 
@@ -126,5 +131,6 @@ release 查询跟随 `https://github.com/<repo>/releases/latest` 的重定向,�
 工具使用 `OMP_TERMUX_REPO`、`OMP_TERMUX_RELEASE_BASE`、`OMP_TERMUX_RAW_BASE`、`OMP_TERMUX_VERSION`、
 `OMP_TERMUX_NO_UPDATE_CHECK`、`OMP_TERMUX_UPDATE_TTL` 和 `OMP_TERMUX_VERBOSE`;
 `OMP_TERMUX_CACHE_HOME` 同时决定工具的临时根和构建脚本的上传目录;
+`OMP_TERMUX_ASK_PATH` 让 `install.sh` 提供写入 rc 的询问;
 构建脚本使用 `OMP_TERMUX_NDK`、`OMP_TERMUX_MODE`、`OMP_TERMUX_HOST` 和 `OMP_TERMUX_PORT`。
 默认值足以覆盖全新设备,不需要任何 export。

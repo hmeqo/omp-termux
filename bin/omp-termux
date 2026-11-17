@@ -13,7 +13,8 @@
 # repository), OMP_TERMUX_CACHE_HOME (the scratch root; each install/verify run works in a run.<pid> directory
 # under it), OMP_TERMUX_VERSION (the version an argument-less install targets), OMP_TERMUX_NO_UPDATE_CHECK (any
 # value = never check for a newer omp-termux; status then reads its `newest` line from the cache),
-# OMP_TERMUX_UPDATE_TTL (seconds between checks, default 86400), OMP_TERMUX_VERBOSE (any value = per-copy detail).
+# OMP_TERMUX_UPDATE_TTL (seconds between checks, default 86400), OMP_TERMUX_VERBOSE (any value = per-copy detail),
+# OMP_TERMUX_ASK_PATH (install.sh sets it: offers to write the PATH entries to the shell's startup file).
 # Design notes: docs/dev/tool.md.
 set -Eeuo pipefail
 # An unexpected non-zero (usually a pipeline element under `pipefail`) would abort with no message.
@@ -48,6 +49,7 @@ BUN_ROOTS=""     # the install roots that exist, one per line
 BUN_HOME=""      # the root in use
 BUN_BIN=""       # "" when bun is missing
 OMP_BIN=""       # "" when there is none
+PATH_HINTS=""    # directories this run left unreachable, one per line
 
 # --- output ----------------------------------------------------------------------------------------
 if [ -t 2 ]; then
@@ -704,23 +706,94 @@ run_verify() { # load the addon through the real loader, then smoke-test the CLI
 }
 
 # --- this tool's own install and update -------------------------------------------------------------
-path_hint() { # $1 = a directory the user has to reach; says so once, in the running shell's syntax
-	case ":$PARENT_PATH:" in
-		*":$1:"*) return 0 ;;
-	esac
-	printf '\n' >&2
-	msg "$1 is not in your PATH yet. Add it, e.g."
+path_missing() { # $1 = a directory: 0 when the user's shell cannot reach it
+	case ":$PARENT_PATH:" in *":$1:"*) return 1 ;; esac
+	return 0
+}
+
+path_dirs() { # the directories this install relies on, when they hold something to run
+	if [ "$BUN_HOME/bin" != "$BIN_HOME" ] && { [ -x "$BUN_HOME/bin/omp" ] || [ -x "$BUN_HOME/bin/bun" ]; }; then
+		printf '%s\n' "$BUN_HOME/bin"
+	fi
+	if [ -x "$BIN_HOME/omp-termux" ]; then
+		printf '%s\n' "$BIN_HOME"
+	fi
+}
+
+path_hint() { # $1 = a directory to report; repeats are dropped
+	path_missing "$1" || return 0
+	case $'\n'"$PATH_HINTS"$'\n' in *$'\n'"$1"$'\n'*) return 0 ;; esac
+	PATH_HINTS="${PATH_HINTS:+$PATH_HINTS$'\n'}$1"
+}
+
+path_reminder() { # what a device install leaves behind that this shell cannot reach yet
+	local d
+	while IFS= read -r d; do path_hint "$d"; done < <(path_dirs)
+}
+
+path_line() { # $1 = directory; the line that adds it, in the login shell's syntax
 	case "${SHELL:-}" in
-		*/fish) printf '  fish_add_path %s\n' "$1" >&2 ;;
-		*) printf '  export PATH="%s:$PATH"    # add to ~/.bashrc, ~/.zshrc, ...\n' "$1" >&2 ;;
+		*/fish) printf "fish_add_path '%s'" "$1" ;;
+		*) printf 'export PATH="%s:$PATH"' "$1" ;;
 	esac
 }
 
-path_reminder() { # what a device install leaves behind that this shell cannot reach yet: `omp` and the tool
-	if [ "$BUN_HOME/bin" != "$BIN_HOME" ] && { [ -x "$BUN_HOME/bin/omp" ] || [ -x "$BUN_HOME/bin/bun" ]; }; then
-		path_hint "$BUN_HOME/bin"
+path_rc() { # the rc file the login shell reads; fails for a shell this script does not know
+	case "${SHELL:-}" in
+		*/fish) printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish" ;;
+		*/zsh) printf '%s\n' "$HOME/.zshrc" ;;
+		*/bash) printf '%s\n' "$HOME/.bashrc" ;;
+		*) return 1 ;;
+	esac
+}
+
+path_tty() { # the prompt needs the terminal, not stdin: `curl | sh` leaves stdin at end of file
+	{ : < /dev/tty; } 2>/dev/null || return 1
+	[ -t 2 ] || return 1
+	exec 3< /dev/tty
+}
+
+path_rc_add() { # $1 = rc file: append the marked PATH block; it is advice, so it never fails the verb
+	local rc="$1" dir
+	if [ -e "$rc" ] && [ ! -w "$rc" ]; then
+		warn "cannot write $rc; add the lines above by hand"
+		return 0
 	fi
-	path_hint "$BIN_HOME"
+	mkdir -p "$(dirname "$rc")" 2>/dev/null || { warn "cannot create $(dirname "$rc")"; return 0; }
+	{
+		printf '\n# omp-termux: PATH\n'
+		while IFS= read -r dir; do path_line "$dir"; printf '\n'; done <<<"$PATH_HINTS"
+		printf '# omp-termux: end\n'
+	} 2>/dev/null >>"$rc" || { warn "cannot write $rc; add the lines above by hand"; return 0; }
+	msg "added the PATH block to $rc; run 'source $rc' or open a new terminal"
+}
+
+path_flush() { # print what path_hint collected, then offer to persist it
+	local dir rc ans
+	[ -n "$PATH_HINTS" ] || return 0
+	printf '\n' >&2
+	while IFS= read -r dir; do
+		printf '%sPATH:%s %s is not on your PATH\n' "$C_WARN" "$C_OFF" "$dir" >&2
+		printf '  %s%s%s\n' "$C_MSG" "$(path_line "$dir")" "$C_OFF" >&2
+	done <<<"$PATH_HINTS"
+	[ -n "${OMP_TERMUX_ASK_PATH:-}" ] || return 0
+	rc="$(path_rc)" || return 0
+	if grep -qF '# omp-termux: PATH' "$rc" 2>/dev/null; then
+		msg "$rc already has the omp-termux PATH block"
+		return 0
+	fi
+	path_tty || return 0
+	printf 'Add to %s? [Y/n] ' "$rc" >&2
+	if read -r -u 3 ans; then
+		printf '\n' >&2
+		case "$ans" in
+			"" | y | Y | yes | YES) path_rc_add "$rc" || true ;;
+			*) : ;;
+		esac
+	else
+		printf '\n' >&2
+	fi
+	return 0
 }
 
 link_self() { # $PREFIX/bin/omp-termux linked into $BIN_HOME; quiet while the link is already right
@@ -861,6 +934,7 @@ cmd_update_self() {
 	rm -f "$SELF_CACHE"     # the next check must re-fetch, not compare against the replaced copy's hash
 	result "updated ${old:0:12} -> ${new:0:12}"
 	link_self
+	path_flush
 }
 
 # --- verbs ------------------------------------------------------------------------------------------
@@ -940,6 +1014,7 @@ cmd_install() { # $1 = version, "latest", a .node path, or empty (= the version 
 		drop_stray_scope_deps
 		cmd_install_self
 		result "nothing to do (omp $version)"
+		path_flush
 		return 0
 	fi
 	# what is published bounds the targets the tool picks itself; a named version is the caller's call
@@ -973,6 +1048,7 @@ cmd_install() { # $1 = version, "latest", a .node path, or empty (= the version 
 	else
 		result "omp $version ready ($n addon copies)"
 	fi
+	path_flush
 }
 
 show_path() { # $1 = path; $HOME collapsed to ~ unless OMP_TERMUX_VERBOSE is set
@@ -1018,7 +1094,7 @@ cmd_status() {
 }
 
 cmd_doctor() {
-	local rec version addon dir cli
+	local rec version addon dir cli d paths
 	rec="$(installed_state)"
 	IFS='|' read -r version addon dir cli <<<"$rec"
 	# A non-login shell (how install.sh invokes the tool) may have PREFIX but no TERMUX_VERSION.
@@ -1028,6 +1104,13 @@ cmd_doctor() {
 	printf '%-9s %s\n' "bun" "${BUN_BIN:-MISSING}"
 	printf '%-9s %s\n' "omp" "${OMP_BIN:-not found}"
 	printf '%-9s %s\n' "addon" "${version:-not found}"
+	paths=0
+	while IFS= read -r d; do
+		path_missing "$d" || continue
+		printf '%-9s %s not on PATH\n' "path" "$d"
+		paths=1
+	done < <(path_dirs)
+	[ "$paths" = 0 ] && printf '%-9s %s\n' "path" "ok"
 	printf '%-9s %s\n' "free" "$(df -h "$HOME" 2>/dev/null | awk 'NR==2{print $4}')"
 	[ -n "$BUN_BIN" ] || warn "bun is missing: 'omp-termux install latest' installs it together with omp"
 }
