@@ -3,18 +3,20 @@
 #   upstream  : https://github.com/can1357/oh-my-pi        (MIT)
 #   pull      : https://github.com/can1357/oh-my-pi/pull/6350
 #   head sha  : 5981c2d61da6030829b2581e820a52c277035855  (base: main e0996aad2cf4)
-#   rebased   : 2026-11-18 onto v18.22.2 (e1ae2cc); the CHANGELOG hunks are dropped.
+#   rebased   : 2026-11-19 onto v19.0.0 (57771ae); the CHANGELOG hunks are dropped.
 #
-# 14 files, +91/-38 against v18.22.2. Summary:
-#   crates/pi-natives           arboard + clipboard/desktop modules become
+# 15 files, +93/-40 against v19.0.0. Summary:
+#   crates/natives              arboard + clipboard/desktop modules become
 #                               cfg(not(target_os = "android")) — arboard has no
 #                               Android backend.
-#   crates/pi-shell             compiles its Linux process backend (proctree.rs) and
+#   crates/shell                compiles its Linux process backend (proctree.rs) and
 #                               the tty/socket/process syscalls on Android too.
-#   crates/pi-builtins          Bionic-compatible process discovery (/proc), real-time
+#   crates/builtins             Bionic-compatible process discovery (/proc), real-time
 #                               signal numbers, and the rsync syscalls.
-#   crates/pi-vfs               defines AT_EACCESS locally: the libc crate omits
+#   crates/vfs                  defines AT_EACCESS locally: the libc crate omits
 #                               it for Android.
+#   crates/xfs                  passes the Android inotify watch descriptor as the
+#                               u32 Android libc declares.
 #   packages/natives/scripts/   scopes RUSTC_BOOTSTRAP to xutf,pi_natives so a
 #     build-bindings.ts         stable rustc (what Termux ships) can build them.
 #
@@ -27,10 +29,10 @@
 # DesktopSession and defer its rejection to the first desktop use.
 #
 # Applied by apply_patch in dev/omp-termux-dev (git apply, CHANGELOG hunks excluded).
-diff --git a/crates/pi-builtins/src/lib.rs b/crates/pi-builtins/src/lib.rs
+diff --git a/crates/builtins/src/lib.rs b/crates/builtins/src/lib.rs
 index 78c0bac..845c948 100644
---- a/crates/pi-builtins/src/lib.rs
-+++ b/crates/pi-builtins/src/lib.rs
+--- a/crates/builtins/src/lib.rs
++++ b/crates/builtins/src/lib.rs
 @@ -234,6 +234,6 @@ pub use proc_snapshot::{ProcInfo, ProcessStatus};
  /// implementation.
  #[cfg(all(
@@ -39,10 +41,10 @@ index 78c0bac..845c948 100644
 +	any(target_os = "android", target_os = "linux", target_os = "macos", target_os = "windows")
  ))]
  pub use proc_snapshot::sys as proc_sys;
-diff --git a/crates/pi-builtins/src/proc_match.rs b/crates/pi-builtins/src/proc_match.rs
+diff --git a/crates/builtins/src/proc_match.rs b/crates/builtins/src/proc_match.rs
 index 1741d09..c2642ad 100644
---- a/crates/pi-builtins/src/proc_match.rs
-+++ b/crates/pi-builtins/src/proc_match.rs
+--- a/crates/builtins/src/proc_match.rs
++++ b/crates/builtins/src/proc_match.rs
 @@ -340,13 +340,13 @@ const SIGNALS: &[(&str, i32)] = &[
  ];
  
@@ -59,10 +61,10 @@ index 1741d09..c2642ad 100644
  const fn is_realtime(_number: i32) -> bool {
  	false
  }
-diff --git a/crates/pi-builtins/src/proc_snapshot.rs b/crates/pi-builtins/src/proc_snapshot.rs
+diff --git a/crates/builtins/src/proc_snapshot.rs b/crates/builtins/src/proc_snapshot.rs
 index 144dd2a..206cf82 100644
---- a/crates/pi-builtins/src/proc_snapshot.rs
-+++ b/crates/pi-builtins/src/proc_snapshot.rs
+--- a/crates/builtins/src/proc_snapshot.rs
++++ b/crates/builtins/src/proc_snapshot.rs
 @@ -116,7 +116,7 @@ fn parse_procargs2(buffer: &[u8]) -> Vec<String> {
  }
  
@@ -154,10 +156,10 @@ index 144dd2a..206cf82 100644
  impl HostProcesses {
  	/// Whether signalling `target` would reach this process or one of its
  	/// ancestors.
-diff --git a/crates/pi-builtins/src/ps.rs b/crates/pi-builtins/src/ps.rs
+diff --git a/crates/builtins/src/ps.rs b/crates/builtins/src/ps.rs
 index 7f1249e..f1a72c7 100644
---- a/crates/pi-builtins/src/ps.rs
-+++ b/crates/pi-builtins/src/ps.rs
+--- a/crates/builtins/src/ps.rs
++++ b/crates/builtins/src/ps.rs
 @@ -1274,7 +1274,7 @@ fn format_ps_elapsed(duration: Duration) -> String {
  	}
  }
@@ -167,10 +169,10 @@ index 7f1249e..f1a72c7 100644
  fn ps_total_memory_bytes() -> Option<u64> {
  	let value = fs::read_to_string("/proc/meminfo")
  		.ok()?
-diff --git a/crates/pi-builtins/src/rsync/transport/tcp/sock_unix.rs b/crates/pi-builtins/src/rsync/transport/tcp/sock_unix.rs
+diff --git a/crates/builtins/src/rsync/transport/tcp/sock_unix.rs b/crates/builtins/src/rsync/transport/tcp/sock_unix.rs
 index d28e8c0..a520472 100644
---- a/crates/pi-builtins/src/rsync/transport/tcp/sock_unix.rs
-+++ b/crates/pi-builtins/src/rsync/transport/tcp/sock_unix.rs
+--- a/crates/builtins/src/rsync/transport/tcp/sock_unix.rs
++++ b/crates/builtins/src/rsync/transport/tcp/sock_unix.rs
 @@ -139,7 +139,7 @@ pub(super) fn numeric_host(addr: &Addr) -> String {
  			addr.as_ptr(),
  			addr.len,
@@ -180,10 +182,10 @@ index d28e8c0..a520472 100644
  			std::ptr::null_mut(),
  			0,
  			libc::NI_NUMERICHOST,
-diff --git a/crates/pi-builtins/src/rsync/tree/sys.rs b/crates/pi-builtins/src/rsync/tree/sys.rs
+diff --git a/crates/builtins/src/rsync/tree/sys.rs b/crates/builtins/src/rsync/tree/sys.rs
 index 08b8c00..6cefe69 100644
---- a/crates/pi-builtins/src/rsync/tree/sys.rs
-+++ b/crates/pi-builtins/src/rsync/tree/sys.rs
+--- a/crates/builtins/src/rsync/tree/sys.rs
++++ b/crates/builtins/src/rsync/tree/sys.rs
 @@ -270,8 +270,16 @@ pub(crate) fn mknodat(
  /// `mkfifoat(dir, name, mode)`.
  pub(crate) fn mkfifoat(dir: Option<BorrowedFd<'_>>, name: &CStr, mode: u32) -> io::Result<()> {
@@ -203,10 +205,10 @@ index 08b8c00..6cefe69 100644
  	}))
  }
  
-diff --git a/crates/pi-natives/Cargo.toml b/crates/pi-natives/Cargo.toml
+diff --git a/crates/natives/Cargo.toml b/crates/natives/Cargo.toml
 index c2bd26b..7f3c277 100644
---- a/crates/pi-natives/Cargo.toml
-+++ b/crates/pi-natives/Cargo.toml
+--- a/crates/natives/Cargo.toml
++++ b/crates/natives/Cargo.toml
 @@ -25,7 +25,6 @@ wayland-pipewire = ["dep:pipewire"]
  [dependencies]
  anyhow.workspace = true
@@ -225,10 +227,10 @@ index c2bd26b..7f3c277 100644
  [target.'cfg(unix)'.dependencies]
  libc.workspace = true
  
-diff --git a/crates/pi-natives/src/lib.rs b/crates/pi-natives/src/lib.rs
+diff --git a/crates/natives/src/lib.rs b/crates/natives/src/lib.rs
 index dc5e9b6..2623cfa 100644
---- a/crates/pi-natives/src/lib.rs
-+++ b/crates/pi-natives/src/lib.rs
+--- a/crates/natives/src/lib.rs
++++ b/crates/natives/src/lib.rs
 @@ -28,10 +28,12 @@ pub mod applefm;
  pub mod audio;
  pub mod block;
@@ -242,10 +244,10 @@ index dc5e9b6..2623cfa 100644
  pub mod desktop;
  pub mod devicecheck;
  pub mod diff;
-diff --git a/crates/pi-shell/src/proctree.rs b/crates/pi-shell/src/proctree.rs
+diff --git a/crates/shell/src/proctree.rs b/crates/shell/src/proctree.rs
 index ffcb9c5..79724ad 100644
---- a/crates/pi-shell/src/proctree.rs
-+++ b/crates/pi-shell/src/proctree.rs
+--- a/crates/shell/src/proctree.rs
++++ b/crates/shell/src/proctree.rs
 @@ -15,7 +15,7 @@ pub use pi_builtins::ProcessStatus;
  
  use crate::cancel::CancelToken;
@@ -255,10 +257,10 @@ index ffcb9c5..79724ad 100644
  mod platform {
  	use std::{
  		collections::HashSet,
-diff --git a/crates/pi-shell/src/sys/proc.rs b/crates/pi-shell/src/sys/proc.rs
+diff --git a/crates/shell/src/sys/proc.rs b/crates/shell/src/sys/proc.rs
 index 4a49af4..ea7e66d 100644
---- a/crates/pi-shell/src/sys/proc.rs
-+++ b/crates/pi-shell/src/sys/proc.rs
+--- a/crates/shell/src/sys/proc.rs
++++ b/crates/shell/src/sys/proc.rs
 @@ -169,13 +169,15 @@ fn parse_stat(pid: i32, line: &[u8]) -> Option<ProcInfo> {
  	})
  }
@@ -292,10 +294,10 @@ index 4a49af4..ea7e66d 100644
  	fn pidfd_open(pid: i32) -> io::Result<OwnedFd> {
  		// SAFETY: pidfd_open takes scalar arguments and returns a new fd.
  		let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
-diff --git a/crates/pi-shell/src/sys/socket.rs b/crates/pi-shell/src/sys/socket.rs
+diff --git a/crates/shell/src/sys/socket.rs b/crates/shell/src/sys/socket.rs
 index c351de7..06a6a3a 100644
---- a/crates/pi-shell/src/sys/socket.rs
-+++ b/crates/pi-shell/src/sys/socket.rs
+--- a/crates/shell/src/sys/socket.rs
++++ b/crates/shell/src/sys/socket.rs
 @@ -385,7 +385,7 @@ fn reverse(addr: IpAddr) -> Option<BString> {
  			(&raw const ss).cast(),
  			len,
@@ -305,10 +307,10 @@ index c351de7..06a6a3a 100644
  			std::ptr::null_mut(),
  			0,
  			libc::NI_NAMEREQD,
-diff --git a/crates/pi-shell/src/sys/tty.rs b/crates/pi-shell/src/sys/tty.rs
+diff --git a/crates/shell/src/sys/tty.rs b/crates/shell/src/sys/tty.rs
 index 31612e3..5121ea0 100644
---- a/crates/pi-shell/src/sys/tty.rs
-+++ b/crates/pi-shell/src/sys/tty.rs
+--- a/crates/shell/src/sys/tty.rs
++++ b/crates/shell/src/sys/tty.rs
 @@ -51,7 +51,7 @@ mod unix {
  		(TermFlag::Inlcr, Field::I, libc::INLCR),
  		(TermFlag::Igncr, Field::I, libc::IGNCR),
@@ -420,10 +422,10 @@ index 31612e3..5121ea0 100644
  		let (ispeed, ospeed) = (Some(code(t.ispeed)), Some(code(t.ospeed)));
  		if let Some(i) = ispeed {
  			// SAFETY: `os` is a valid termios.
-diff --git a/crates/pi-vfs/src/fs.rs b/crates/pi-vfs/src/fs.rs
+diff --git a/crates/vfs/src/fs.rs b/crates/vfs/src/fs.rs
 index a378045..8ad6a37 100644
---- a/crates/pi-vfs/src/fs.rs
-+++ b/crates/pi-vfs/src/fs.rs
+--- a/crates/vfs/src/fs.rs
++++ b/crates/vfs/src/fs.rs
 @@ -507,11 +507,17 @@ fn helper_exited() -> io::Error {
  #[cfg(unix)]
  fn may_access(path: &Path, mode: libc::c_int) -> bool {
@@ -460,3 +462,23 @@ index 089bfd9..e04310e 100644
  // Windows: cc-rs and rustc auto-locate cl.exe/link.exe through the VS
  // registry, but the cmake crate (opusic-sys' bundled Opus) needs cmake —
  // and its Ninja generator needs ninja — on PATH. VS Build Tools ships both
+diff --git a/crates/xfs/src/watch/inotify.rs b/crates/xfs/src/watch/inotify.rs
+index 451dfc7..db311be 100644
+--- a/crates/xfs/src/watch/inotify.rs
++++ b/crates/xfs/src/watch/inotify.rs
+@@ -259,6 +259,6 @@
+ 				});
+ 			if gone {
+ 				// SAFETY: plain syscall on a live descriptor.
+-				unsafe { libc::inotify_rm_watch(inotify, wd) };
++				unsafe { libc::inotify_rm_watch(inotify, wd as _) };
+ 			}
+ 			!gone
+@@ -370,6 +370,6 @@
+ 			self.forget_below(&path, false);
+ 			// SAFETY: plain syscall on a live descriptor.
+-			unsafe { libc::inotify_rm_watch(self.inotify.as_raw_fd(), wd) };
++			unsafe { libc::inotify_rm_watch(self.inotify.as_raw_fd(), wd as _) };
+ 		}
+ 		Ok(())
+ 	}
