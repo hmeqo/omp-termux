@@ -3,9 +3,9 @@
 #   upstream  : https://github.com/can1357/oh-my-pi        (MIT)
 #   pull      : https://github.com/can1357/oh-my-pi/pull/6350
 #   head sha  : 5981c2d61da6030829b2581e820a52c277035855  (base: main e0996aad2cf4)
-#   rebased   : 2026-11-19 onto v19.0.0 (57771ae); the CHANGELOG hunks are dropped.
+#   rebased   : 2026-11-23 onto v19.1.0 (a7135b8); the CHANGELOG hunks are dropped.
 #
-# 15 files, +93/-40 against v19.0.0. Summary:
+# 15 files, +93/-40 against v19.1.0. Summary:
 #   crates/natives              arboard + clipboard/desktop modules become
 #                               cfg(not(target_os = "android")) — arboard has no
 #                               Android backend.
@@ -231,13 +231,13 @@ diff --git a/crates/natives/src/lib.rs b/crates/natives/src/lib.rs
 index dc5e9b6..2623cfa 100644
 --- a/crates/natives/src/lib.rs
 +++ b/crates/natives/src/lib.rs
-@@ -28,10 +28,12 @@ pub mod applefm;
- pub mod audio;
+@@ -30,10 +30,12 @@ pub mod applefm;
  pub mod block;
  #[cfg(all(target_os = "linux", target_env = "gnu"))]
  mod bundled_libc;
 +#[cfg(not(target_os = "android"))]
  pub mod clipboard;
+ pub mod console_input;
  pub mod console_threads;
  pub mod crash_handler;
 +#[cfg(not(target_os = "android"))]
