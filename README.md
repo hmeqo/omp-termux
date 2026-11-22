@@ -17,23 +17,14 @@ exits with `Unsupported platform: android-arm64`. This repository builds that ad
 curl -fsSL https://raw.githubusercontent.com/hmeqo/omp-termux/main/install.sh | sh
 ```
 
-The script:
+To install a specific version, add it at the end:
 
-1. installs bun if it is missing;
-2. updates omp to the newest version built here;
-3. copies the matching addon into the `native/` directory of the pi-natives package;
-4. links `omp-termux` into `PATH`.
+```sh
+curl -fsSL https://raw.githubusercontent.com/hmeqo/omp-termux/main/install.sh | sh -s -- 18.3.4
+```
 
-Arguments are passed through to `install`, so `... | sh -s -- 18.3.4` installs version 18.3.4.
-
-If `omp` or `omp-termux` is still not found afterwards, the script offers to add them to your shell's startup file;
-accept and open a new terminal.
-
-Start `omp` to check the install; restart it if it was already running.
-
-A newer `omp-termux` on `main` is reported on stderr on every run of `omp-termux` until you update it. Set
-`OMP_TERMUX_NO_UPDATE_CHECK=1` to skip the check, or `OMP_TERMUX_UPDATE_TTL` (seconds, default 86400) to change how
-often it queries. The check only requests `main` from GitHub; no telemetry or identifiers are sent.
+Start `omp` to check the install; restart it if it was already running. What the installer does, and how update
+checks work: [docs/user/install.md](docs/user/install.md).
 
 ## Commands
 
@@ -50,7 +41,7 @@ often it queries. The check only requests `main` from GitHub; no telemetry or id
 
 * On Termux the screen scrolls from the top when the software keyboard opens;
   `omp config set tui.resizeScrollback preserve` avoids it.
-* Nerd Font icons: [docs/user/font.md](docs/user/font.md) (or [中文](docs/user/font.zh-CN.md)).
+* Nerd Font icons: [docs/user/font.md](docs/user/font.md).
 * Termux pulls the view back to the bottom whenever `omp` writes to the terminal; try `tmux` (`Ctrl-b [`) or
   `SCROLL` (`⇳`) in Termux 0.119 and newer. omp 18.4.1 through 18.5.0 redraw once a second even while idle, so the
   view returns about a second after scrolling back.
@@ -60,6 +51,12 @@ often it queries. The check only requests `main` from GitHub; no telemetry or id
 * No desktop automation and no native clipboard on Android; the clipboard falls back to `termux-clipboard-set`.
 * No audio, speech-to-text or text-to-speech on Android.
 * Only arm64-v8a is supported; there is no build for armv7 or x86.
+
+## Building the addon
+
+`omp-termux-dev` cross-compiles the addon from a checkout and, with a device reachable over ssh, installs and
+verifies it: [docs/dev/build.md](docs/dev/build.md). The device tool's design is
+in [docs/dev/tool.md](docs/dev/tool.md).
 
 ## Credits and license
 

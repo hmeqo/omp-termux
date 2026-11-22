@@ -59,7 +59,7 @@ a target device over ssh. Both are single bash files organized in sections intro
 | `install.sh` | Bootstrap: fetch raw `bin/omp-termux`, `bash -n`, run `install latest` (or the given/`$OMP_TERMUX_VERSION`). |
 | `patches/` | Vendored upstream PR #6350 patch with provenance header; read only by the build script. |
 | `.github/workflows/build.yml` | The only CI: build on tag/dispatch, publish release `omp-<version>`. |
-| `README.md`, `README.zh-CN.md`; `docs/user/font.md`, `.zh-CN.md` | User side: install, verbs, caveats; Nerd Font notes. |
+| `README.md`, `README.zh-CN.md`; `docs/user/install.md`, `font.md`, `.zh-CN.md` | User side: install, verbs, caveats; install details; Nerd Font notes. |
 | `docs/dev/build.md`, `docs/dev/tool.md` | Build and device-tool design docs; `.zh-CN.md` twins beside each. |
 | `tests/verify.sh` | The local gate: static checks plus the fake-device matrices. |
 | `work/`, `out/` | Gitignored: clone + cargo target + opus prefix + napi-cli; built artifacts. |
@@ -108,7 +108,7 @@ sh tests/verify.sh                          # the local gate: syntax + shellchec
   `docs/dev/build.md`, and never restates code.
 - Docs are a bilingual pair-set with **English canonical**: commands, flags, paths, env vars, file names, error
   strings and fenced blocks stay byte-identical across pair members. Keep the switcher on line 3, break prose after
-  punctuation, no personal data. `README.md` is user-side and says nothing about the build; `docs/dev/*` is for
+  punctuation, no personal data. `README.md` is user-side; its build section only links `docs/dev/*`, which is for
   maintainers. Never teach a hand copy.
 
 ## Important Files

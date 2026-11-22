@@ -3,7 +3,7 @@
 [English](tool.md) | [中文](tool.zh-CN.md)
 
 `bin/omp-termux` 把 Android 插件装进 `omp` 所用的 pi-natives 包,并让 omp 与插件保持同一版本。
-本文记录它实现的规则;命令见 [README](../../README.md),构建与发布见 [build.md](build.md)。
+本文记录它实现的规则;命令见 [README](../../README.zh-CN.md),构建与发布见 [build.zh-CN.md](build.zh-CN.md)。
 
 ## 工具维护的位置
 
@@ -37,6 +37,8 @@ shell 会被固定在那里(`BUN_INSTALL`、`PATH`),因为 bun 安装到 `BUN_IN
 插件的版本来自链接后写入的 64 字节槽(`PI_NATIVES_VERSION_STAMP:<version>`);
 更旧的构建改为导出一个按版本命名的 napi 名(`__piNativesV18_3_2`)。两种都接受。
 
+## bun 树
+
 `bun install -g` 留下的 `<root>/bin/omp` 解析到 `<root>/install/cache/<pkg>@<version>@@@1`,那里没有
 `node_modules`,于是惰性导入的包会失败(`omp stats` 找不到插件),而 CLI 其余部分能启动。
 `link_global_tree` 把每个全局包链接进 `<cache>/node_modules`;它只刷新符号链接,遇到真实目录则不动,
@@ -69,7 +71,11 @@ shell 会被固定在那里(`BUN_INSTALL`、`PATH`),因为 bun 安装到 `BUN_IN
 结果行写到 stdout。先取得插件再替换 omp,bun 也在碰插件之前达到下限,所以下载失败不会动到现有安装。
 被拒绝的目标或失败的下载不会改动任何东西。
 
-## status 与 verify
+`install` 与 `update-self` 把 PATH 建议放在结果行之后。
+写 rc 文件的询问只在设置了 `OMP_TERMUX_ASK_PATH` 时出现,且必须有终端;没有终端时只打印命令,不写任何文件。
+`path_rc` 从 `$SHELL`、`$XDG_CONFIG_HOME` 与 `$HOME` 得出该文件。
+
+## status
 
 `status` 只把行写到 stdout:
 
@@ -88,6 +94,8 @@ paths     bun   ~/.bun
 `addon` 行列出每个已安装副本及其大小,`newest` 在 release 缓存有值时出现,
 `paths` 会把 `$HOME` 折叠成 `~`,除非设置了 `OMP_TERMUX_VERBOSE=1`。
 
+## verify
+
 `verify` 为每个插件写一行,再为 CLI 写一行:
 
 ```
@@ -104,14 +112,12 @@ omp    18.18.3  starts         ok
 之后 `run_verify` 运行用户已有的 `omp`(取自 `PATH`,否则 bun 的根),当它不是 `$BUN_HOME/bin/omp` 时告警,
 启动失败则判为失败。加载失败的副本会连同所在目录一起报告;安装失败时会提示执行 `omp-termux verify`。
 
-`install` 与 `update-self` 把 PATH 建议放在结果行之后。
-写 rc 文件的询问只在设置了 `OMP_TERMUX_ASK_PATH` 时出现,且必须有终端;没有终端时只打印命令,不写任何文件。
-`path_rc` 从 `$SHELL`、`$XDG_CONFIG_HOME` 与 `$HOME` 得出该文件。
+## doctor
 
 `doctor` 把 `termux`、`uname`、`tool`、`bun`、`omp`、`addon` 和 `free` 行写到 stdout,
 每个不在 `PATH` 上的目录写一行 `path`,都能访问时写 `path ok`,缺少 bun 时告警。
 
-## 自更新与 release 查询
+## 自更新
 
 除 `help` 和 `update-self` 外,`check_self_update` 在每个动词之前运行,且只在已安装副本上运行。
 它抓取 `main`,把正文的 SHA-256 与自己的比较,把结果缓存到自己的 `cache/self-update`,
@@ -121,6 +127,8 @@ omp    18.18.3  starts         ok
 
 `update-self` 抓取脚本,运行 `bash -n`,比较哈希,然后才把新副本改名覆盖旧的;正文相同则报告 `already up to date`。
 
+## HTTP 与 release 查询
+
 所有请求都经过唯一的辅助函数 `http URL OUT MAX`:一次 `curl -fsSL` 调用,带 `--retry 3`、`--connect-timeout 15`
 和 `--max-time MAX`,打印 `<status> <effective URL>`。调用方按状态分类 404/4xx/5xx;`000` 或空状态表示网络失败。
 release 查询跟随 `https://github.com/<repo>/releases/latest` 的重定向,而不用 GitHub API:
@@ -128,9 +136,10 @@ release 查询跟随 `https://github.com/<repo>/releases/latest` 的重定向,�
 
 ## 环境变量
 
-工具使用 `OMP_TERMUX_REPO`、`OMP_TERMUX_RELEASE_BASE`、`OMP_TERMUX_RAW_BASE`、`OMP_TERMUX_VERSION`、
-`OMP_TERMUX_NO_UPDATE_CHECK`、`OMP_TERMUX_UPDATE_TTL` 和 `OMP_TERMUX_VERBOSE`;
-`OMP_TERMUX_CACHE_HOME` 同时决定工具的临时根和构建脚本的上传目录;
-`OMP_TERMUX_ASK_PATH` 让 `install.sh` 提供写入 rc 的询问;
-构建脚本使用 `OMP_TERMUX_NDK`、`OMP_TERMUX_MODE`、`OMP_TERMUX_HOST` 和 `OMP_TERMUX_PORT`。
+- 工具:`OMP_TERMUX_REPO`、`OMP_TERMUX_RELEASE_BASE`、`OMP_TERMUX_RAW_BASE`、`OMP_TERMUX_VERSION`、
+  `OMP_TERMUX_NO_UPDATE_CHECK`、`OMP_TERMUX_UPDATE_TTL` 和 `OMP_TERMUX_VERBOSE`;
+- `OMP_TERMUX_CACHE_HOME` 同时决定工具的临时根和构建脚本的上传目录,
+  `OMP_TERMUX_ASK_PATH` 让 `install.sh` 提供写入 rc 的询问;
+- 构建脚本:`OMP_TERMUX_NDK`、`OMP_TERMUX_MODE`、`OMP_TERMUX_HOST` 和 `OMP_TERMUX_PORT`。
+
 默认值足以覆盖全新设备,不需要任何 export。

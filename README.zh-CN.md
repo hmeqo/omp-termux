@@ -17,22 +17,14 @@
 curl -fsSL https://raw.githubusercontent.com/hmeqo/omp-termux/main/install.sh | sh
 ```
 
-脚本会:
+需要指定版本时,在命令末尾加上版本号:
 
-1. 在缺少 bun 时先装上 bun;
-2. 把 omp 升级到本仓库构建的最新版本;
-3. 把匹配的插件复制进 pi-natives 包的 `native/` 目录;
-4. 把 `omp-termux` 链接进 `PATH`。
+```sh
+curl -fsSL https://raw.githubusercontent.com/hmeqo/omp-termux/main/install.sh | sh -s -- 18.3.4
+```
 
-参数会原样传给 `install`,所以 `... | sh -s -- 18.3.4` 会安装 18.3.4 版。
-
-装完如果终端仍找不到 `omp` 或 `omp-termux`,脚本会问要不要把它们加入 shell 启动配置;同意后开一个新终端即可。
-
-装好后启动 `omp` 验证;如果它原本就在运行,请重启一次。
-
-`main` 上有更新的 `omp-termux` 时,每次运行 `omp-termux` 都会在 stderr 提示一行,直到你更新。
-设 `OMP_TERMUX_NO_UPDATE_CHECK=1` 可跳过这项检查,`OMP_TERMUX_UPDATE_TTL`(单位秒,默认 86400)调整检查间隔。
-检查只访问 GitHub 上的 `main`,不发送遥测,也不发送任何标识。
+装好后启动 `omp` 验证;如果它原本就在运行,请重启一次。安装脚本具体做了什么、更新检查如何工作:
+[docs/user/install.zh-CN.md](docs/user/install.zh-CN.md)。
 
 ## 命令
 
@@ -48,7 +40,7 @@ curl -fsSL https://raw.githubusercontent.com/hmeqo/omp-termux/main/install.sh | 
 ## 注意事项
 
 * 在 Termux 中打开软键盘时画面会从顶部滚动;执行 `omp config set tui.resizeScrollback preserve` 可避免。
-* Nerd Font 图标见 [docs/user/font.zh-CN.md](docs/user/font.zh-CN.md)(另有[英文版](docs/user/font.md))。
+* Nerd Font 图标见 [docs/user/font.zh-CN.md](docs/user/font.zh-CN.md)。
 * `omp` 每次向终端输出,Termux 都会把视图拉回底部;可以试试 `tmux`(`Ctrl-b [`),
   或用 Termux 0.119 及以后版本里的 `SCROLL`(`⇳`)。
   omp 18.4.1 到 18.5.0 空闲时也会每秒重绘,所以回滚后大约一秒又会被拉回底部。
@@ -58,6 +50,10 @@ curl -fsSL https://raw.githubusercontent.com/hmeqo/omp-termux/main/install.sh | 
 * Android 上不支持桌面自动化和原生剪贴板,剪贴板改用 `termux-clipboard-set`。
 * Android 上不支持音频、语音识别与语音合成。
 * 只支持 arm64-v8a,armv7 与 x86 没有构建。
+
+## 构建插件
+
+`omp-termux-dev` 从源码交叉编译插件,并在设备可经 ssh 访问时安装与验证:[docs/dev/build.zh-CN.md](docs/dev/build.zh-CN.md)。设备端工具的设计见 [docs/dev/tool.zh-CN.md](docs/dev/tool.zh-CN.md)。
 
 ## 致谢与许可
 

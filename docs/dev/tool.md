@@ -39,6 +39,8 @@ an addon only goes into a package carrying its own release.
 An addon reports its release from a 64-byte slot stamped after linking (`PI_NATIVES_VERSION_STAMP:<version>`), or
 from a per-release napi name on older builds (`__piNativesV18_3_2`). Both are accepted.
 
+## The bun tree
+
 `bun install -g` leaves `<root>/bin/omp` resolving into `<root>/install/cache/<pkg>@<version>@@@1`, where no
 `node_modules` exists, so lazily imported packages fail (`omp stats` cannot find the addon) while the rest of the
 CLI starts. `link_global_tree` links each global package into `<cache>/node_modules`; it refreshes symlinks and
@@ -74,7 +76,11 @@ stderr; the result line goes to stdout. The order keeps a failed download from t
 addon is in hand before omp is replaced, and bun reaches its floor before the addon lands. A refused target or a
 failed download changes nothing.
 
-## status and verify
+`install` and `update-self` print the PATH advice after their result line. The prompt that offers to write the
+shell's rc file runs only when `OMP_TERMUX_ASK_PATH` is set and only on a terminal; without one, the commands are
+printed and nothing is written. `path_rc` names the file from `$SHELL`, `$XDG_CONFIG_HOME` and `$HOME`.
+
+## status
 
 `status` writes rows to stdout only:
 
@@ -93,6 +99,8 @@ paths     bun   ~/.bun
 `addon` rows carry every installed copy with its size, `newest` appears when the release cache holds one, and
 `paths` collapses `$HOME` to `~` unless `OMP_TERMUX_VERBOSE=1`.
 
+## verify
+
 `verify` writes one row per addon, then one for the CLI:
 
 ```
@@ -110,14 +118,12 @@ another release need not carry an addon for this platform. `run_verify` then run
 `PATH`, else bun's roots), warns when it is not `$BUN_HOME/bin/omp`, and fails when it does not start. A failed copy
 is reported with its directory; an install failure suggests `omp-termux verify`.
 
-`install` and `update-self` print the PATH advice after their result line. The prompt that offers to write the
-shell's rc file runs only when `OMP_TERMUX_ASK_PATH` is set and only on a terminal; without one, the commands are
-printed and nothing is written. `path_rc` names the file from `$SHELL`, `$XDG_CONFIG_HOME` and `$HOME`.
+## doctor
 
 `doctor` writes `termux`, `uname`, `tool`, `bun`, `omp`, `addon` and `free` rows to stdout, a `path` row naming every
 directory not on `PATH` (or `path ok`), and warns when bun is missing.
 
-## Self-update and release lookups
+## Self-update
 
 `check_self_update` runs before every verb except `help` and `update-self`, and only from the installed copy. It
 fetches `main`, compares the SHA-256 of the body with its own, caches the result under its own
@@ -129,6 +135,8 @@ resolved a release writes it back.
 `update-self` fetches the script, runs `bash -n`, compares hashes, and only then renames the new copy over the old
 one; an identical body reports `already up to date`.
 
+## HTTP and release lookups
+
 Every request goes through one helper, `http URL OUT MAX`: one `curl -fsSL` call with `--retry 3`,
 `--connect-timeout 15` and `--max-time MAX`, printing `<status> <effective URL>`. Callers classify 404/4xx/5xx by
 status; `000` or an empty status is a network failure. Release lookups follow the redirect of
@@ -137,9 +145,10 @@ shared by a phone behind carrier NAT.
 
 ## Environment variables
 
-`OMP_TERMUX_REPO`, `OMP_TERMUX_RELEASE_BASE`, `OMP_TERMUX_RAW_BASE`, `OMP_TERMUX_VERSION`,
-`OMP_TERMUX_NO_UPDATE_CHECK`, `OMP_TERMUX_UPDATE_TTL` and `OMP_TERMUX_VERBOSE` for the tool; `OMP_TERMUX_CACHE_HOME`
-sets the tool's scratch root and the build script's upload directory; `OMP_TERMUX_ASK_PATH` lets `install.sh` offer
-the rc write; `OMP_TERMUX_NDK`, `OMP_TERMUX_MODE`,
-`OMP_TERMUX_HOST` and `OMP_TERMUX_PORT` for the build script. Defaults cover a fresh device, so no export is
-required.
+- the tool: `OMP_TERMUX_REPO`, `OMP_TERMUX_RELEASE_BASE`, `OMP_TERMUX_RAW_BASE`, `OMP_TERMUX_VERSION`,
+  `OMP_TERMUX_NO_UPDATE_CHECK`, `OMP_TERMUX_UPDATE_TTL` and `OMP_TERMUX_VERBOSE`;
+- `OMP_TERMUX_CACHE_HOME` sets the tool's scratch root and the build script's upload directory, and
+  `OMP_TERMUX_ASK_PATH` lets `install.sh` offer the rc write;
+- the build script: `OMP_TERMUX_NDK`, `OMP_TERMUX_MODE`, `OMP_TERMUX_HOST` and `OMP_TERMUX_PORT`.
+
+Defaults cover a fresh device, so no export is required.
